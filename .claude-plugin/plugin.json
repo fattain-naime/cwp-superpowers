@@ -25,5 +25,6 @@
     "security",
     "backup",
     "migration"
-  ]
+  ],
+  "monitors": "./monitors/monitors.json"
 }

@@ -1,3 +1,37 @@
 {
-  "subagentStatusLine": "CWP Agent Active"
+  "allowedTools": [
+    "Bash(cwp *)",
+    "Bash(systemctl status *)",
+    "Bash(systemctl restart *)",
+    "Bash(systemctl is-active *)",
+    "Bash(ss -tlnp*)",
+    "Bash(df -h*)",
+    "Bash(free -h*)",
+    "Bash(cat /proc/loadavg*)",
+    "Bash(tail *)",
+    "Bash(grep *)",
+    "Bash(ls *)",
+    "Bash(cat /etc/csf/csf.conf*)",
+    "Bash(cat /var/named/*.db*)",
+    "Bash(cat /etc/postfix/main.cf*)",
+    "Bash(cat /etc/nginx/nginx.conf*)",
+    "Bash(cat /usr/local/apache/conf/httpd.conf*)",
+    "Bash(cat /etc/my.cnf*)",
+    "Bash(mysql -e *)",
+    "Bash(mysqldump *)",
+    "Bash(postqueue -p*)",
+    "Bash(mailq*)",
+    "Bash(csf *)",
+    "Bash(apachectl *)",
+    "Bash(nginx -t*)",
+    "Bash(named-checkconf*)",
+    "Bash(php -v*)",
+    "Bash(php -m*)",
+    "Bash(php --ini*)",
+    "Bash(varnishstat*)",
+    "Bash(redis-cli *)",
+    "Bash(dig *)",
+    "Bash(openssl *)",
+    "Bash(journalctl *)"
+  ]
 }

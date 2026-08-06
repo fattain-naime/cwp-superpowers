@@ -1,18 +1,6 @@
 {
   "description": "CWP AI Agent Plugin hooks for server management automation and safety",
   "hooks": {
-    "SessionStart": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/load-server-context.sh",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
     "PreToolUse": [
       {
         "matcher": "Bash",
@@ -113,18 +101,6 @@
             "type": "prompt",
             "prompt": "Preserve critical CWP context before compaction. Include: server IP, CWP version, active services, any ongoing issues, pending operations, and recent changes made.",
             "timeout": 15
-          }
-        ]
-      }
-    ],
-    "SessionEnd": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "mkdir -p ${CLAUDE_PLUGIN_ROOT}/logs && echo \"[CWP] Session ended: $(date)\" >> ${CLAUDE_PLUGIN_ROOT}/logs/agent-sessions.log 2>/dev/null || true",
-            "timeout": 5
           }
         ]
       }
