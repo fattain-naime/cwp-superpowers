@@ -1,0 +1,1344 @@
+#!/usr/bin/env bash
+# =============================================================================
+# CWP CLI - Command Line Interface for CWP (Control Web Panel) Management
+# =============================================================================
+# Version: 1.0.0
+# License: MIT
+# Requires: bash 4+, ssh, curl, jq (optional)
+# =============================================================================
+
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+readonly VERSION="1.0.0"
+readonly SCRIPT_NAME="$(basename "$0")"
+readonly CONFIG_FILE="${CWP_CLI_CONF:-$HOME/.cwp-cli.conf}"
+readonly DEFAULT_API_PORT="2304"
+readonly DEFAULT_SSH_PORT="22"
+readonly DEFAULT_SSH_USER="root"
+readonly SSH_TIMEOUT=10
+readonly API_TIMEOUT=30
+
+# ---------------------------------------------------------------------------
+# Colors
+# ---------------------------------------------------------------------------
+if [[ -t 1 ]]; then
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    BLUE='\033[0;34m'
+    CYAN='\033[0;36m'
+    BOLD='\033[1m'
+    NC='\033[0m'
+else
+    RED='' GREEN='' YELLOW='' BLUE='' CYAN='' BOLD='' NC=''
+fi
+
+# ---------------------------------------------------------------------------
+# Global variables (set by config / flags)
+# ---------------------------------------------------------------------------
+CWP_HOST=""
+CWP_API_KEY=""
+CWP_API_PORT="$DEFAULT_API_PORT"
+SSH_USER="$DEFAULT_SSH_USER"
+SSH_PORT="$DEFAULT_SSH_PORT"
+SSH_KEY=""
+VERBOSE=0
+OUTPUT_FORMAT="text"  # text|json
+
+# ---------------------------------------------------------------------------
+# Utility helpers
+# ---------------------------------------------------------------------------
+
+log_info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
+log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*" >&2; }
+log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+log_debug() { [[ "$VERBOSE" -ge 1 ]] && echo -e "${CYAN}[DEBUG]${NC} $*" >&2 || true; }
+
+die() { log_error "$@"; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Input validation functions (security: prevent command injection)
+# ---------------------------------------------------------------------------
+
+# Validate service name - allow only alphanumeric, dots, hyphens, underscores
+validate_service_name() {
+    local name="$1"
+    if [[ ! "$name" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+        die "Invalid service name: '$name' (allowed: alphanumeric, dots, hyphens, underscores)"
+    fi
+}
+
+# Validate IP address or CIDR - allow only numbers, dots, slashes
+validate_ip_address() {
+    local ip="$1"
+    if [[ ! "$ip" =~ ^[0-9./]+$ ]]; then
+        die "Invalid IP address: '$ip' (allowed: numbers, dots, slashes for CIDR)"
+    fi
+}
+
+# Validate domain name - allow only alphanumeric, hyphens, dots
+validate_domain() {
+    local domain="$1"
+    if [[ ! "$domain" =~ ^[a-zA-Z0-9.-]+$ ]]; then
+        die "Invalid domain name: '$domain' (allowed: alphanumeric, hyphens, dots)"
+    fi
+}
+
+# Validate email address - basic format check
+validate_email() {
+    local email="$1"
+    if [[ ! "$email" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+        die "Invalid email address: '$email'"
+    fi
+}
+
+# Validate log name - fixed allowlist
+validate_log_name() {
+    local name="$1"
+    case "$name" in
+        access|error|mail|auth|cwp|messages|secure|cron|boot)
+            ;;
+        *)
+            die "Invalid log name: '$name' (allowed: access, error, mail, auth, cwp, messages, secure, cron, boot)"
+            ;;
+    esac
+}
+
+# Validate numeric input - positive integer
+validate_positive_integer() {
+    local value="$1"
+    local name="${2:-value}"
+    if [[ ! "$value" =~ ^[0-9]+$ ]] || [[ "$value" -eq 0 ]]; then
+        die "Invalid $name: '$value' (must be a positive integer)"
+    fi
+}
+
+# Validate DNS record type - fixed allowlist
+validate_dns_record_type() {
+    local type="$1"
+    case "$type" in
+        A|AAAA|CNAME|MX|TXT|NS|SRV|PTR|SOA)
+            ;;
+        *)
+            die "Invalid DNS record type: '$type' (allowed: A, AAAA, CNAME, MX, TXT, NS, SRV, PTR, SOA)"
+            ;;
+    esac
+}
+
+# Validate username - allow only alphanumeric, hyphens, underscores
+validate_username() {
+    local username="$1"
+    if [[ ! "$username" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+        die "Invalid username: '$username' (allowed: alphanumeric, hyphens, underscores)"
+    fi
+}
+
+# JSON output helper
+json_output() {
+    local key="$1" value="$2"
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+        if command -v jq &>/dev/null; then
+            jq -n --arg k "$key" --arg v "$value" '{($k): $v}'
+        else
+            local escaped_value
+            escaped_value=$(printf '%s' "$value" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g; s/$/\\n/' | sed '$ s/\\n$//')
+            printf '{"%s": "%s"}\n' "$key" "$escaped_value"
+        fi
+    else
+        echo "$value"
+    fi
+}
+
+# Table printer
+print_table() {
+    local header="$1"
+    shift
+    echo -e "${BOLD}${header}${NC}"
+    printf '%s\n' "$@" | column -t -s $'\t' 2>/dev/null || printf '%s\n' "$@"
+}
+
+# ---------------------------------------------------------------------------
+# Config handling
+# ---------------------------------------------------------------------------
+
+load_config() {
+    if [[ -f "$CONFIG_FILE" ]]; then
+        log_debug "Loading config from $CONFIG_FILE"
+        # shellcheck source=/dev/null
+        source "$CONFIG_FILE"
+        CWP_HOST="${CWP_HOST:-}"
+        CWP_API_KEY="${CWP_API_KEY:-}"
+        CWP_API_PORT="${CWP_API_PORT:-$DEFAULT_API_PORT}"
+        SSH_USER="${SSH_USER:-$DEFAULT_SSH_USER}"
+        SSH_PORT="${SSH_PORT:-$DEFAULT_SSH_PORT}"
+        SSH_KEY="${SSH_KEY:-}"
+    fi
+}
+
+save_config() {
+    cat > "$CONFIG_FILE" <<EOF
+# CWP CLI Configuration - Generated $(date -u +%Y-%m-%dT%H:%M:%SZ)
+CWP_HOST="${CWP_HOST}"
+CWP_API_KEY="${CWP_API_KEY}"
+CWP_API_PORT="${CWP_API_PORT}"
+SSH_USER="${SSH_USER}"
+SSH_PORT="${SSH_PORT}"
+SSH_KEY="${SSH_KEY}"
+EOF
+    chmod 600 "$CONFIG_FILE"
+    log_info "Configuration saved to $CONFIG_FILE"
+}
+
+validate_connection_config() {
+    [[ -z "$CWP_HOST" ]] && die "CWP_HOST not set. Run '${SCRIPT_NAME} setup' or use --host."
+}
+
+# ---------------------------------------------------------------------------
+# Remote execution helpers
+# ---------------------------------------------------------------------------
+
+build_ssh_cmd() {
+    local cmd=("ssh" "-o" "StrictHostKeyChecking=accept-new" "-o" "ConnectTimeout=$SSH_TIMEOUT")
+    [[ -n "$SSH_KEY" ]] && cmd+=("-i" "$SSH_KEY")
+    cmd+=("-p" "$SSH_PORT" "${SSH_USER}@${CWP_HOST}")
+    echo "${cmd[@]}"
+}
+
+remote_exec() {
+    validate_connection_config
+    local ssh_cmd
+    read -ra ssh_cmd <<< "$(build_ssh_cmd)"
+    log_debug "Remote exec: $*"
+    "${ssh_cmd[@]}" "$@" 2>/dev/null
+}
+
+remote_exec_sudo() {
+    remote_exec "sudo" "bash" "-c" "$*"
+}
+
+# ---------------------------------------------------------------------------
+# API helpers
+# ---------------------------------------------------------------------------
+
+api_call() {
+    local endpoint="$1"
+    shift
+    validate_connection_config
+    local url="https://${CWP_HOST}:${CWP_API_PORT}/${endpoint}"
+    log_debug "API call: GET $url $*"
+
+    local response
+    response=$(curl -sS --max-time "$API_TIMEOUT" \
+        -H "Authorization: Bearer ${CWP_API_KEY}" \
+        -H "Content-Type: application/json" \
+        "$@" "$url" 2>&1) || die "API request failed: $response"
+
+    echo "$response"
+}
+
+api_call_post() {
+    local endpoint="$1"
+    local data="$2"
+    shift 2
+    validate_connection_config
+    local url="https://${CWP_HOST}:${CWP_API_PORT}/${endpoint}"
+    log_debug "API call: POST $url"
+
+    local response
+    response=$(curl -sS --max-time "$API_TIMEOUT" \
+        -X POST \
+        -H "Authorization: Bearer ${CWP_API_KEY}" \
+        -H "Content-Type: application/json" \
+        -d "$data" \
+        "$@" "$url" 2>&1) || die "API request failed: $response"
+
+    echo "$response"
+}
+
+# ---------------------------------------------------------------------------
+# Subcommand: status
+# ---------------------------------------------------------------------------
+cmd_status() {
+    log_info "Checking CWP server status on ${CWP_HOST}..."
+
+    echo -e "\n${BOLD}=== System Overview ===${NC}"
+    remote_exec "hostname -f" 2>/dev/null && echo "" || log_warn "Could not get hostname"
+
+    echo -e "${BOLD}Uptime:${NC}"
+    remote_exec "uptime -p" 2>/dev/null || remote_exec "uptime" 2>/dev/null
+
+    echo -e "\n${BOLD}=== Resource Usage ===${NC}"
+    remote_exec "free -h | head -3" 2>/dev/null
+
+    echo ""
+    remote_exec "df -h / /home 2>/dev/null | head -5" 2>/dev/null
+
+    echo -e "\n${BOLD}=== Load Average ===${NC}"
+    remote_exec "cat /proc/loadavg" 2>/dev/null
+
+    echo -e "\n${BOLD}=== CWP Services ===${NC}"
+    local services=("cwpsrv" "httpd" "nginx" "mysql" "mariadb" "postfix" "dovecot" "named" "pure-ftpd" "iptables")
+    for svc in "${services[@]}"; do
+        local status_icon
+        if remote_exec "systemctl is-active $svc" &>/dev/null; then
+            status_icon="${GREEN}running${NC}"
+        else
+            status_icon="${RED}stopped${NC}"
+        fi
+        printf "  %-20s %b\n" "$svc" "$status_icon"
+    done
+
+    echo -e "\n${BOLD}=== Recent Login Attempts ===${NC}"
+    remote_exec "last -5 2>/dev/null" || echo "  N/A"
+}
+
+# ---------------------------------------------------------------------------
+# Subcommand: user
+# ---------------------------------------------------------------------------
+cmd_user() {
+    local subcmd="${1:-list}"
+    shift 2>/dev/null || true
+
+    case "$subcmd" in
+        list)
+            log_info "Listing user accounts..."
+            remote_exec_sudo "cat /etc/passwd | grep -E '/home/' | awk -F: '{print \$1, \$3, \$6}' | column -t"
+            ;;
+        info)
+            local username="${1:-}"
+            [[ -z "$username" ]] && die "Usage: ${SCRIPT_NAME} user info <username>"
+            validate_username "$username"
+            log_info "Getting info for user: $username"
+            echo -e "${BOLD}System Info:${NC}"
+            remote_exec "id $username" 2>/dev/null || die "User not found"
+            echo ""
+            echo -e "${BOLD}Home Directory:${NC}"
+            remote_exec_sudo "ls -la /home/$username/ 2>/dev/null | head -15"
+            echo ""
+            echo -e "${BOLD}Disk Usage:${NC}"
+            remote_exec_sudo "du -sh /home/$username 2>/dev/null"
+            ;;
+        add)
+            local username="${1:-}"
+            [[ -z "$username" ]] && die "Usage: ${SCRIPT_NAME} user add <username>"
+            validate_username "$username"
+            log_info "Creating user account: $username"
+            remote_exec_sudo "/scripts/cwp_api -a add_user -u $username"
+            ;;
+        delete)
+            local username="${1:-}"
+            [[ -z "$username" ]] && die "Usage: ${SCRIPT_NAME} user delete <username>"
+            validate_username "$username"
+            log_warn "Deleting user account: $username"
+            read -rp "Are you sure? (yes/no): " confirm
+            [[ "$confirm" == "yes" ]] || die "Aborted."
+            remote_exec_sudo "/scripts/cwp_api -a delete_user -u $username"
+            ;;
+        suspend)
+            local username="${1:-}"
+            [[ -z "$username" ]] && die "Usage: ${SCRIPT_NAME} user suspend <username>"
+            validate_username "$username"
+            log_warn "Suspending user: $username"
+            remote_exec_sudo "/scripts/cwp_api -a suspend_user -u $username"
+            ;;
+        unsuspend)
+            local username="${1:-}"
+            [[ -z "$username" ]] && die "Usage: ${SCRIPT_NAME} user unsuspend <username>"
+            validate_username "$username"
+            log_info "Unsuspending user: $username"
+            remote_exec_sudo "/scripts/cwp_api -a unsuspend_user -u $username"
+            ;;
+        password)
+            local username="${1:-}"
+            [[ -z "$username" ]] && die "Usage: ${SCRIPT_NAME} user password <username>"
+            validate_username "$username"
+            read -rsp "New password: " pass1; echo ""
+            read -rsp "Confirm password: " pass2; echo ""
+            [[ "$pass1" == "$pass2" ]] || die "Passwords do not match."
+            printf '%s:%s\n' "$username" "$pass1" | remote_exec_sudo "chpasswd"
+            log_info "Password updated for $username"
+            ;;
+        *)
+            die "Unknown user subcommand: $subcmd. Use: list|info|add|delete|suspend|unsuspend|password"
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Input validation helpers
+# ---------------------------------------------------------------------------
+validate_db_name() {
+    local name="$1"
+    [[ "$name" =~ ^[a-zA-Z0-9_]+$ ]] || die "Invalid database name: only alphanumeric and underscores allowed"
+}
+
+# ---------------------------------------------------------------------------
+# Subcommand: database
+# ---------------------------------------------------------------------------
+cmd_database() {
+    local subcmd="${1:-list}"
+    shift 2>/dev/null || true
+
+    case "$subcmd" in
+        list)
+            log_info "Listing databases..."
+            remote_exec_sudo "mysql -e 'SHOW DATABASES;' 2>/dev/null" || die "MySQL connection failed"
+            ;;
+        create)
+            local dbname="${1:-}"
+            [[ -z "$dbname" ]] && die "Usage: ${SCRIPT_NAME} database create <name>"
+            validate_db_name "$dbname"
+            log_info "Creating database: $dbname"
+            remote_exec_sudo "mysql -e \"CREATE DATABASE \\\`$dbname\\\`;\""
+            log_info "Database $dbname created."
+            ;;
+        delete)
+            local dbname="${1:-}"
+            [[ -z "$dbname" ]] && die "Usage: ${SCRIPT_NAME} database delete <name>"
+            validate_db_name "$dbname"
+            log_warn "Deleting database: $dbname"
+            read -rp "Are you sure? (yes/no): " confirm
+            [[ "$confirm" == "yes" ]] || die "Aborted."
+            remote_exec_sudo "mysql -e \"DROP DATABASE \\\`$dbname\\\`;\""
+            log_info "Database $dbname deleted."
+            ;;
+        user-add)
+            local dbuser="${1:-}" dbname="${2:-}"
+            [[ -z "$dbuser" || -z "$dbname" ]] && die "Usage: ${SCRIPT_NAME} database user-add <user> <database>"
+            validate_username "$dbuser"
+            validate_db_name "$dbname"
+            read -rsp "Password for $dbuser: " dbpass; echo ""
+            remote_exec_sudo "mysql -e \"CREATE USER '$dbuser'@'localhost' IDENTIFIED BY '$(printf '%s' "$dbpass" | sed "s/'/''/g")';\""
+            remote_exec_sudo "mysql -e \"GRANT ALL PRIVILEGES ON \\\`$dbname\\\`.* TO '$dbuser'@'localhost';\""
+            remote_exec_sudo "mysql -e 'FLUSH PRIVILEGES;'"
+            log_info "User $dbuser granted access to $dbname"
+            ;;
+        backup)
+            local dbname="${1:-}"
+            [[ -z "$dbname" ]] && die "Usage: ${SCRIPT_NAME} database backup <name>"
+            validate_db_name "$dbname"
+            local dumpfile="/tmp/${dbname}_$(date +%Y%m%d_%H%M%S).sql.gz"
+            log_info "Backing up database $dbname to $dumpfile..."
+            remote_exec_sudo "mysqldump $dbname | gzip > $dumpfile"
+            log_info "Backup saved: $dumpfile"
+            ;;
+        restore)
+            local dbname="${1:-}" dumpfile="${2:-}"
+            [[ -z "$dbname" || -z "$dumpfile" ]] && die "Usage: ${SCRIPT_NAME} database restore <name> <file>"
+            validate_db_name "$dbname"
+            log_info "Restoring database $dbname from $dumpfile..."
+            remote_exec_sudo "gunzip -c $dumpfile | mysql $dbname"
+            log_info "Database $dbname restored."
+            ;;
+        size)
+            log_info "Database sizes:"
+            remote_exec_sudo "mysql -e \"SELECT table_schema AS 'Database', ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS 'Size (MB)' FROM information_schema.tables GROUP BY table_schema ORDER BY SUM(data_length + index_length) DESC;\""
+            ;;
+        *)
+            die "Unknown database subcommand: $subcmd. Use: list|create|delete|user-add|backup|restore|size"
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Subcommand: email
+# ---------------------------------------------------------------------------
+cmd_email() {
+    local subcmd="${1:-list}"
+    shift 2>/dev/null || true
+
+    case "$subcmd" in
+        list)
+            local domain="${1:-}"
+            if [[ -n "$domain" ]]; then
+                validate_domain "$domain"
+                log_info "Listing email accounts for $domain..."
+                remote_exec_sudo "cat /etc/postfix/vmailbox 2>/dev/null | grep '$domain' | awk '{print \$1}'"
+            else
+                log_info "Listing all mail domains..."
+                remote_exec_sudo "cat /etc/postfix/virtual 2>/dev/null | grep -v '^#' | awk '{print \$2}' | sort -u"
+            fi
+            ;;
+        create)
+            local email="${1:-}" password="${2:-}"
+            [[ -z "$email" ]] && die "Usage: ${SCRIPT_NAME} email create <email> [password]"
+            validate_email "$email"
+            [[ -z "$password" ]] && { read -rsp "Password: " password; echo ""; }
+            log_info "Creating email account: $email"
+            remote_exec_sudo "/scripts/create_mail_account '$email' '$password'"
+            ;;
+        delete)
+            local email="${1:-}"
+            [[ -z "$email" ]] && die "Usage: ${SCRIPT_NAME} email delete <email>"
+            validate_email "$email"
+            log_warn "Deleting email: $email"
+            read -rp "Are you sure? (yes/no): " confirm
+            [[ "$confirm" == "yes" ]] || die "Aborted."
+            remote_exec_sudo "/scripts/delete_mail_account '$email'"
+            ;;
+        forwarders)
+            local domain="${1:-}"
+            [[ -z "$domain" ]] && die "Usage: ${SCRIPT_NAME} email forwarders <domain>"
+            validate_domain "$domain"
+            log_info "Email forwarders for $domain:"
+            remote_exec_sudo "cat /etc/postfix/virtual 2>/dev/null | grep '$domain'"
+            ;;
+        queue)
+            log_info "Mail queue status:"
+            remote_exec_sudo "postqueue -p 2>/dev/null | head -20"
+            ;;
+        flush)
+            log_info "Flushing mail queue..."
+            remote_exec_sudo "postfix flush"
+            log_info "Mail queue flushed."
+            ;;
+        *)
+            die "Unknown email subcommand: $subcmd. Use: list|create|delete|forwarders|queue|flush"
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Subcommand: dns
+# ---------------------------------------------------------------------------
+cmd_dns() {
+    local subcmd="${1:-list}"
+    shift 2>/dev/null || true
+
+    case "$subcmd" in
+        list)
+            log_info "Listing DNS zones..."
+            remote_exec_sudo "ls /var/named/*.db 2>/dev/null | xargs -I{} basename {} .db" || echo "No zones found."
+            ;;
+        zone)
+            local domain="${1:-}"
+            [[ -z "$domain" ]] && die "Usage: ${SCRIPT_NAME} dns zone <domain>"
+            validate_domain "$domain"
+            log_info "DNS zone for $domain:"
+            remote_exec_sudo "cat /var/named/${domain}.db 2>/dev/null" || die "Zone file not found."
+            ;;
+        add-record)
+            local domain="${1:-}" record_type="${2:-}" name="${3:-}" value="${4:-}"
+            [[ -z "$domain" || -z "$record_type" || -z "$name" || -z "$value" ]] && \
+                die "Usage: ${SCRIPT_NAME} dns add-record <domain> <type> <name> <value>"
+            validate_domain "$domain"
+            validate_dns_record_type "$record_type"
+            # Validate name - allow only alphanumeric, hyphens, dots, asterisks for wildcards
+            if [[ ! "$name" =~ ^[a-zA-Z0-9._*-]+$ ]]; then
+                die "Invalid DNS record name: '$name' (allowed: alphanumeric, hyphens, dots, asterisks)"
+            fi
+            # Validate value based on record type
+            case "$record_type" in
+                A)
+                    if [[ ! "$value" =~ ^[0-9.]+$ ]]; then
+                        die "Invalid A record value: '$value' (must be an IP address)"
+                    fi
+                    ;;
+                AAAA)
+                    if [[ ! "$value" =~ ^[0-9a-fA-F:]+$ ]]; then
+                        die "Invalid AAAA record value: '$value' (must be an IPv6 address)"
+                    fi
+                    ;;
+                MX)
+                    # MX format: priority domain
+                    if [[ ! "$value" =~ ^[0-9]+[[:space:]]+[a-zA-Z0-9.-]+$ ]]; then
+                        die "Invalid MX record value: '$value' (format: priority domain)"
+                    fi
+                    ;;
+                *)
+                    # For other types, allow alphanumeric, dots, spaces, and basic characters
+                    if [[ "$value" =~ [\;\&\|\`\$\(\)] ]]; then
+                        die "Invalid record value: '$value' (contains unsafe characters)"
+                    fi
+                    ;;
+            esac
+            local ttl=14400
+            local entry="${name}    ${ttl}    IN    ${record_type}    ${value}"
+            log_info "Adding DNS record: $entry"
+            remote_exec_sudo "echo '$entry' >> /var/named/${domain}.db"
+            remote_exec_sudo "systemctl reload named"
+            log_info "Record added and named reloaded."
+            ;;
+        check)
+            local domain="${1:-}"
+            [[ -z "$domain" ]] && die "Usage: ${SCRIPT_NAME} dns check <domain>"
+            validate_domain "$domain"
+            log_info "DNS check for $domain:"
+            echo -e "${BOLD}A Record:${NC}"
+            remote_exec "dig +short $domain A" 2>/dev/null || dig +short "$domain" A 2>/dev/null || echo "  N/A"
+            echo -e "${BOLD}MX Record:${NC}"
+            remote_exec "dig +short $domain MX" 2>/dev/null || dig +short "$domain" MX 2>/dev/null || echo "  N/A"
+            echo -e "${BOLD}NS Record:${NC}"
+            remote_exec "dig +short $domain NS" 2>/dev/null || dig +short "$domain" NS 2>/dev/null || echo "  N/A"
+            ;;
+        *)
+            die "Unknown dns subcommand: $subcmd. Use: list|zone|add-record|check"
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Subcommand: ssl
+# ---------------------------------------------------------------------------
+cmd_ssl() {
+    local subcmd="${1:-list}"
+    shift 2>/dev/null || true
+
+    case "$subcmd" in
+        list)
+            log_info "Listing SSL certificates..."
+            remote_exec_sudo "ls -la /etc/pki/tls/certs/ 2>/dev/null | grep '\.pem\|\.crt'"
+            echo ""
+            log_info "Let's Encrypt certificates:"
+            remote_exec_sudo "ls /etc/letsencrypt/live/ 2>/dev/null" || echo "  None found."
+            ;;
+        info)
+            local domain="${1:-}"
+            [[ -z "$domain" ]] && die "Usage: ${SCRIPT_NAME} ssl info <domain>"
+            log_info "SSL certificate info for $domain:"
+            remote_exec "echo | openssl s_client -servername $domain -connect $domain:443 2>/dev/null | openssl x509 -noout -dates -subject -issuer" || \
+                echo "  Could not retrieve certificate."
+            ;;
+        install)
+            local domain="${1:-}"
+            [[ -z "$domain" ]] && die "Usage: ${SCRIPT_NAME} ssl install <domain>"
+            log_info "Installing Let's Encrypt SSL for $domain..."
+            remote_exec_sudo "/scripts/generate_ssl '$domain'"
+            remote_exec_sudo "systemctl reload httpd nginx"
+            log_info "SSL installed for $domain"
+            ;;
+        renew)
+            log_info "Renewing Let's Encrypt certificates..."
+            remote_exec_sudo "certbot renew --quiet 2>&1" || \
+                remote_exec_sudo "/scripts/renew_lets_encrypt"
+            log_info "Certificate renewal complete."
+            ;;
+        check)
+            local domain="${1:-}"
+            [[ -z "$domain" ]] && die "Usage: ${SCRIPT_NAME} ssl check <domain>"
+            log_info "Checking SSL for $domain..."
+            local expiry
+            expiry=$(remote_exec "echo | openssl s_client -servername $domain -connect $domain:443 2>/dev/null | openssl x509 -noout -enddate" 2>/dev/null) || \
+                die "Could not connect to $domain:443"
+            echo "$expiry"
+
+            local expiry_date
+            expiry_date=$(echo "$expiry" | cut -d= -f2)
+            local expiry_epoch
+            expiry_epoch=$(date -d "$expiry_date" +%s 2>/dev/null || echo "0")
+            local now_epoch
+            now_epoch=$(date +%s)
+            local days_left=$(( (expiry_epoch - now_epoch) / 86400 ))
+
+            if [[ "$days_left" -lt 0 ]]; then
+                echo -e "${RED}Certificate EXPIRED${NC}"
+            elif [[ "$days_left" -lt 30 ]]; then
+                echo -e "${YELLOW}Certificate expires in $days_left days - renewal recommended${NC}"
+            else
+                echo -e "${GREEN}Certificate valid for $days_left days${NC}"
+            fi
+            ;;
+        *)
+            die "Unknown ssl subcommand: $subcmd. Use: list|info|install|renew|check"
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Subcommand: security
+# ---------------------------------------------------------------------------
+cmd_security() {
+    local subcmd="${1:-status}"
+    shift 2>/dev/null || true
+
+    case "$subcmd" in
+        status)
+            log_info "Security status:"
+            echo -e "\n${BOLD}=== Firewall (iptables) ===${NC}"
+            remote_exec_sudo "iptables -L -n --line-numbers 2>/dev/null | head -30" || echo "  N/A"
+
+            echo -e "\n${BOLD}=== Failed Login Attempts (last 24h) ===${NC}"
+            remote_exec_sudo "journalctl -u sshd --since '24 hours ago' 2>/dev/null | grep -c 'Failed password' | xargs -I{} echo '  {} failed attempts'" 2>/dev/null || echo "  N/A"
+
+            echo -e "\n${BOLD}=== Open Ports ===${NC}"
+            remote_exec_sudo "ss -tlnp 2>/dev/null | head -20" || echo "  N/A"
+
+            echo -e "\n${BOLD}=== SELinux Status ===${NC}"
+            remote_exec_sudo "getenforce 2>/dev/null" || echo "  N/A"
+            ;;
+        firewall)
+            local action="${1:-list}"
+            case "$action" in
+                list)
+                    remote_exec_sudo "iptables -L -n --line-numbers"
+                    ;;
+                block)
+                    local ip="${2:-}"
+                    [[ -z "$ip" ]] && die "Usage: ${SCRIPT_NAME} security firewall block <ip>"
+                    validate_ip_address "$ip"
+                    remote_exec_sudo "iptables -I INPUT -s $ip -j DROP"
+                    log_info "Blocked IP: $ip"
+                    ;;
+                unblock)
+                    local ip="${2:-}"
+                    [[ -z "$ip" ]] && die "Usage: ${SCRIPT_NAME} security firewall unblock <ip>"
+                    validate_ip_address "$ip"
+                    remote_exec_sudo "iptables -D INPUT -s $ip -j DROP"
+                    log_info "Unblocked IP: $ip"
+                    ;;
+                *)
+                    die "Unknown firewall action: $action. Use: list|block|unblock"
+                    ;;
+            esac
+            ;;
+        ssh-hardening)
+            log_info "Applying SSH hardening..."
+            remote_exec_sudo "sed -i 's/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config"
+            remote_exec_sudo "sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config"
+            remote_exec_sudo "sed -i 's/^#*MaxAuthTries.*/MaxAuthTries 3/' /etc/ssh/sshd_config"
+            remote_exec_sudo "systemctl restart sshd"
+            log_info "SSH hardening applied."
+            ;;
+        updates)
+            log_info "Checking for security updates..."
+            remote_exec_sudo "yum check-update --security 2>/dev/null" || \
+                remote_exec_sudo "dnf check-update --security 2>/dev/null" || \
+                echo "  Could not check updates."
+            ;;
+        fail2ban)
+            local action="${1:-status}"
+            case "$action" in
+                status)
+                    remote_exec_sudo "fail2ban-client status 2>/dev/null" || echo "fail2ban not installed."
+                    ;;
+                restart)
+                    remote_exec_sudo "systemctl restart fail2ban"
+                    log_info "fail2ban restarted."
+                    ;;
+                *)
+                    die "Unknown fail2ban action: $action. Use: status|restart"
+                    ;;
+            esac
+            ;;
+        *)
+            die "Unknown security subcommand: $subcmd. Use: status|firewall|ssh-hardening|updates|fail2ban"
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Subcommand: backup
+# ---------------------------------------------------------------------------
+cmd_backup() {
+    local subcmd="${1:-list}"
+    shift 2>/dev/null || true
+
+    case "$subcmd" in
+        list)
+            log_info "Listing backups..."
+            remote_exec_sudo "ls -lh /backup/ 2>/dev/null | tail -20" || echo "  No backups found."
+            ;;
+        create)
+            local username="${1:-}"
+            [[ -z "$username" ]] && die "Usage: ${SCRIPT_NAME} backup create <username>"
+            validate_username "$username"
+            log_info "Creating backup for $username..."
+            remote_exec_sudo "/scripts/backup_user $username"
+            log_info "Backup complete."
+            ;;
+        restore)
+            local username="${1:-}" backupfile="${2:-}"
+            [[ -z "$username" ]] && die "Usage: ${SCRIPT_NAME} backup restore <username> [backup-file]"
+            validate_username "$username"
+            if [[ -z "$backupfile" ]]; then
+                backupfile=$(remote_exec_sudo "ls -t /backup/${username}_*.tar.gz 2>/dev/null | head -1")
+                [[ -z "$backupfile" ]] && die "No backup found for $username"
+            fi
+            log_info "Restoring $username from $backupfile..."
+            remote_exec_sudo "/scripts/restore_user $username $backupfile"
+            log_info "Restore complete."
+            ;;
+        verify)
+            local backupfile="${1:-}"
+            [[ -z "$backupfile" ]] && die "Usage: ${SCRIPT_NAME} backup verify <file>"
+            log_info "Verifying backup: $backupfile"
+            remote_exec_sudo "tar -tzf $backupfile >/dev/null 2>&1" && \
+                log_info "Backup integrity OK." || \
+                log_error "Backup file is corrupt!"
+            ;;
+        cleanup)
+            local days="${1:-30}"
+            validate_positive_integer "$days" "days"
+            log_warn "Removing backups older than $days days..."
+            remote_exec_sudo "find /backup/ -name '*.tar.gz' -mtime +$days -delete"
+            log_info "Cleanup complete."
+            ;;
+        schedule)
+            local username="${1:-}" schedule="${2:-daily}"
+            [[ -z "$username" ]] && die "Usage: ${SCRIPT_NAME} backup schedule <username> [daily|weekly|monthly]"
+            validate_username "$username"
+            local cron_expr
+            case "$schedule" in
+                daily)   cron_expr="0 2 * * *" ;;
+                weekly)  cron_expr="0 2 * * 0" ;;
+                monthly) cron_expr="0 2 1 * *" ;;
+                *)       die "Invalid schedule. Use: daily|weekly|monthly" ;;
+            esac
+            remote_exec_sudo "(crontab -l 2>/dev/null; echo '$cron_expr /scripts/backup_user $username') | crontab -"
+            log_info "Backup scheduled ($schedule) for $username"
+            ;;
+        *)
+            die "Unknown backup subcommand: $subcmd. Use: list|create|restore|verify|cleanup|schedule"
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Subcommand: service
+# ---------------------------------------------------------------------------
+cmd_service() {
+    local subcmd="${1:-list}"
+    shift 2>/dev/null || true
+
+    case "$subcmd" in
+        list)
+            log_info "Service status:"
+            local services=("cwpsrv" "httpd" "nginx" "mysql" "mariadb" "postfix" "dovecot" "named" "pure-ftpd" "php-fpm" "redis" "memcached")
+            for svc in "${services[@]}"; do
+                local status
+                status=$(remote_exec "systemctl is-active $svc 2>/dev/null" 2>/dev/null || echo "unknown")
+                local icon
+                case "$status" in
+                    active)   icon="${GREEN}●${NC} active" ;;
+                    inactive) icon="${RED}○${NC} inactive" ;;
+                    *)        icon="${YELLOW}?${NC} unknown" ;;
+                esac
+                printf "  %-20s %b\n" "$svc" "$icon"
+            done
+            ;;
+        restart)
+            local service="${1:-}"
+            [[ -z "$service" ]] && die "Usage: ${SCRIPT_NAME} service restart <name>"
+            validate_service_name "$service"
+            log_info "Restarting $service..."
+            remote_exec_sudo "systemctl restart $service"
+            log_info "$service restarted."
+            ;;
+        stop)
+            local service="${1:-}"
+            [[ -z "$service" ]] && die "Usage: ${SCRIPT_NAME} service stop <name>"
+            validate_service_name "$service"
+            log_warn "Stopping $service..."
+            remote_exec_sudo "systemctl stop $service"
+            log_info "$service stopped."
+            ;;
+        start)
+            local service="${1:-}"
+            [[ -z "$service" ]] && die "Usage: ${SCRIPT_NAME} service start <name>"
+            validate_service_name "$service"
+            log_info "Starting $service..."
+            remote_exec_sudo "systemctl start $service"
+            log_info "$service started."
+            ;;
+        enable)
+            local service="${1:-}"
+            [[ -z "$service" ]] && die "Usage: ${SCRIPT_NAME} service enable <name>"
+            validate_service_name "$service"
+            remote_exec_sudo "systemctl enable $service"
+            log_info "$service enabled at boot."
+            ;;
+        disable)
+            local service="${1:-}"
+            [[ -z "$service" ]] && die "Usage: ${SCRIPT_NAME} service disable <name>"
+            validate_service_name "$service"
+            remote_exec_sudo "systemctl disable $service"
+            log_info "$service disabled at boot."
+            ;;
+        logs)
+            local service="${1:-}" lines="${2:-50}"
+            [[ -z "$service" ]] && die "Usage: ${SCRIPT_NAME} service logs <name> [lines]"
+            validate_service_name "$service"
+            validate_positive_integer "$lines" "line count"
+            remote_exec_sudo "journalctl -u $service --no-pager -n $lines"
+            ;;
+        *)
+            die "Unknown service subcommand: $subcmd. Use: list|restart|stop|start|enable|disable|logs"
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Subcommand: php
+# ---------------------------------------------------------------------------
+cmd_php() {
+    local subcmd="${1:-list}"
+    shift 2>/dev/null || true
+
+    case "$subcmd" in
+        list)
+            log_info "Installed PHP versions:"
+            remote_exec_sudo "ls /opt/alt/ 2>/dev/null | grep php" || \
+                remote_exec_sudo "php -v 2>/dev/null | head -1"
+            ;;
+        set)
+            local username="${1:-}" version="${2:-}"
+            [[ -z "$username" || -z "$version" ]] && die "Usage: ${SCRIPT_NAME} php set <username> <version>"
+            validate_username "$username"
+            validate_positive_integer "$version" "PHP version"
+            log_info "Setting PHP $version for $username..."
+            remote_exec_sudo "/scripts/php_switch '$username' '$version'"
+            log_info "PHP version updated."
+            ;;
+        info)
+            local version="${1:-}"
+            if [[ -n "$version" ]]; then
+                remote_exec_sudo "/opt/alt/php${version}/usr/bin/php -v 2>/dev/null" || \
+                    die "PHP version $version not found."
+                echo ""
+                remote_exec_sudo "/opt/alt/php${version}/usr/bin/php -m 2>/dev/null"
+            else
+                remote_exec "php -v"
+                echo ""
+                remote_exec "php -m"
+            fi
+            ;;
+        ini)
+            local version="${1:-}"
+            if [[ -n "$version" ]]; then
+                remote_exec_sudo "/opt/alt/php${version}/usr/bin/php --ini 2>/dev/null"
+            else
+                remote_exec "php --ini"
+            fi
+            ;;
+        extensions)
+            local version="${1:-}"
+            if [[ -n "$version" ]]; then
+                remote_exec_sudo "/opt/alt/php${version}/usr/bin/php -m 2>/dev/null"
+            else
+                remote_exec "php -m"
+            fi
+            ;;
+        fpm-status)
+            log_info "PHP-FPM pool status:"
+            remote_exec_sudo "curl -s http://localhost/php-fpm-status 2>/dev/null" || echo "  Status page not available."
+            ;;
+        *)
+            die "Unknown php subcommand: $subcmd. Use: list|set|info|ini|extensions|fpm-status"
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Subcommand: fix
+# ---------------------------------------------------------------------------
+cmd_fix() {
+    local subcmd="${1:-auto}"
+    shift 2>/dev/null || true
+
+    case "$subcmd" in
+        auto)
+            log_info "Running auto-fix diagnostics..."
+            echo -e "\n${BOLD}[1/6] Checking disk space...${NC}"
+            remote_exec_sudo "df -h / /home | awk 'NR>1 {gsub(/%/,\"\",\$5); if(\$5>90) print \"WARNING: \"\$6\" is \"\$5\"% full\"}'" || true
+
+            echo -e "\n${BOLD}[2/6] Checking MySQL...${NC}"
+            if remote_exec_sudo "mysqladmin ping 2>/dev/null" &>/dev/null; then
+                echo -e "  ${GREEN}MySQL OK${NC}"
+            else
+                echo -e "  ${YELLOW}MySQL not responding, attempting restart...${NC}"
+                remote_exec_sudo "systemctl restart mysql || systemctl restart mariadb"
+            fi
+
+            echo -e "\n${BOLD}[3/6] Checking web server...${NC}"
+            if ! remote_exec_sudo "systemctl is-active httpd" &>/dev/null; then
+                echo -e "  ${YELLOW}Apache not running, attempting restart...${NC}"
+                remote_exec_sudo "systemctl restart httpd"
+            else
+                echo -e "  ${GREEN}Apache OK${NC}"
+            fi
+
+            echo -e "\n${BOLD}[4/6] Checking mail server...${NC}"
+            if ! remote_exec_sudo "systemctl is-active postfix" &>/dev/null; then
+                echo -e "  ${YELLOW}Postfix not running, attempting restart...${NC}"
+                remote_exec_sudo "systemctl restart postfix"
+            else
+                echo -e "  ${GREEN}Postfix OK${NC}"
+            fi
+
+            echo -e "\n${BOLD}[5/6] Fixing permissions...${NC}"
+            remote_exec_sudo "fix_permissions" 2>/dev/null || echo "  Skipped (command not available)."
+
+            echo -e "\n${BOLD}[6/6] Cleaning temp files...${NC}"
+            remote_exec_sudo "find /tmp -type f -atime +7 -delete 2>/dev/null"
+            echo -e "  ${GREEN}Temp cleanup done${NC}"
+
+            log_info "Auto-fix complete."
+            ;;
+        permissions)
+            local username="${1:-}"
+            if [[ -n "$username" ]]; then
+                validate_username "$username"
+                log_info "Fixing permissions for $username..."
+                remote_exec_sudo "chown -R $username:$username /home/$username/public_html"
+                remote_exec_sudo "find /home/$username/public_html -type d -exec chmod 755 {} \\;"
+                remote_exec_sudo "find /home/$username/public_html -type f -exec chmod 644 {} \\;"
+            else
+                log_info "Fixing global permissions..."
+                remote_exec_sudo "/scripts/fix_permissions"
+            fi
+            log_info "Permissions fixed."
+            ;;
+        ownership)
+            local username="${1:-}"
+            [[ -z "$username" ]] && die "Usage: ${SCRIPT_NAME} fix ownership <username>"
+            validate_username "$username"
+            log_info "Fixing ownership for $username..."
+            remote_exec_sudo "chown -R $username:$username /home/$username"
+            log_info "Ownership fixed."
+            ;;
+        dns)
+            local domain="${1:-}"
+            [[ -z "$domain" ]] && die "Usage: ${SCRIPT_NAME} fix dns <domain>"
+            validate_domain "$domain"
+            log_info "Rebuilding DNS zone for $domain..."
+            remote_exec_sudo "/scripts/rebuild_dns_zone $domain"
+            remote_exec_sudo "systemctl restart named"
+            log_info "DNS zone rebuilt."
+            ;;
+        ssl)
+            local domain="${1:-}"
+            [[ -z "$domain" ]] && die "Usage: ${SCRIPT_NAME} fix ssl <domain>"
+            validate_domain "$domain"
+            log_info "Fixing SSL for $domain..."
+            remote_exec_sudo "/scripts/generate_ssl '$domain'"
+            remote_exec_sudo "systemctl restart httpd nginx"
+            log_info "SSL fixed."
+            ;;
+        mail)
+            log_info "Fixing mail configuration..."
+            remote_exec_sudo "postfix check 2>&1"
+            remote_exec_sudo "systemctl restart postfix dovecot"
+            log_info "Mail services restarted."
+            ;;
+        *)
+            die "Unknown fix subcommand: $subcmd. Use: auto|permissions|ownership|dns|ssl|mail"
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Subcommand: optimize
+# ---------------------------------------------------------------------------
+cmd_optimize() {
+    local subcmd="${1:-all}"
+    shift 2>/dev/null || true
+
+    case "$subcmd" in
+        all)
+            cmd_optimize mysql
+            cmd_optimize php
+            cmd_optimize apache
+            cmd_optimize opcache
+            log_info "Full optimization complete."
+            ;;
+        mysql)
+            log_info "Optimizing MySQL/MariaDB..."
+            remote_exec_sudo "mysql -e \"SET GLOBAL innodb_buffer_pool_size = $(remote_exec_sudo "free -b | awk '/Mem:/{printf \"%d\", \$2*0.5}'");\" 2>/dev/null" || true
+            remote_exec_sudo "mysqlcheck --optimize --all-databases 2>/dev/null" || true
+            log_info "MySQL optimization complete."
+            ;;
+        php)
+            log_info "Optimizing PHP configuration..."
+            remote_exec_sudo "sed -i 's/^memory_limit.*/memory_limit = 256M/' /etc/php.ini 2>/dev/null"
+            remote_exec_sudo "sed -i 's/^max_execution_time.*/max_execution_time = 60/' /etc/php.ini 2>/dev/null"
+            remote_exec_sudo "systemctl restart php-fpm 2>/dev/null"
+            log_info "PHP optimization complete."
+            ;;
+        apache)
+            log_info "Optimizing Apache..."
+            remote_exec_sudo "sed -i 's/^KeepAlive.*/KeepAlive On/' /etc/httpd/conf/httpd.conf 2>/dev/null"
+            remote_exec_sudo "sed -i 's/^MaxKeepAliveRequests.*/MaxKeepAliveRequests 100/' /etc/httpd/conf/httpd.conf 2>/dev/null"
+            remote_exec_sudo "systemctl restart httpd 2>/dev/null"
+            log_info "Apache optimization complete."
+            ;;
+        nginx)
+            log_info "Optimizing Nginx..."
+            remote_exec_sudo "nginx -t 2>&1" && \
+                remote_exec_sudo "systemctl reload nginx" && \
+                log_info "Nginx reloaded." || \
+                log_error "Nginx config test failed."
+            ;;
+        opcache)
+            log_info "Optimizing OPcache..."
+            remote_exec_sudo "php -r 'opcache_reset();' 2>/dev/null" || true
+            log_info "OPcache reset."
+            ;;
+        logs)
+            log_info "Cleaning old logs..."
+            remote_exec_sudo "find /var/log -name '*.gz' -mtime +30 -delete 2>/dev/null"
+            remote_exec_sudo "journalctl --vacuum-time=7d 2>/dev/null"
+            log_info "Log cleanup complete."
+            ;;
+        *)
+            die "Unknown optimize subcommand: $subcmd. Use: all|mysql|php|apache|nginx|opcache|logs"
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Subcommand: migrate
+# ---------------------------------------------------------------------------
+cmd_migrate() {
+    local subcmd="${1:-help}"
+    shift 2>/dev/null || true
+
+    case "$subcmd" in
+        prepare)
+            local username="${1:-}"
+            [[ -z "$username" ]] && die "Usage: ${SCRIPT_NAME} migrate prepare <username>"
+            log_info "Preparing migration package for $username..."
+            local outdir="/tmp/migration_${username}_$(date +%Y%m%d)"
+            remote_exec_sudo "mkdir -p $outdir"
+            remote_exec_sudo "/scripts/backup_user $username"
+            remote_exec_sudo "cp /backup/${username}_*.tar.gz $outdir/"
+            remote_exec_sudo "mysqldump --all-databases > $outdir/databases.sql 2>/dev/null"
+            remote_exec_sudo "tar czf /tmp/${username}_migration.tar.gz -C $outdir ."
+            log_info "Migration package: /tmp/${username}_migration.tar.gz"
+            ;;
+        import)
+            local username="${1:-}" package="${2:-}"
+            [[ -z "$username" || -z "$package" ]] && die "Usage: ${SCRIPT_NAME} migrate import <username> <package>"
+            log_info "Importing migration for $username from $package..."
+            local tmpdir="/tmp/migration_import_$$"
+            remote_exec_sudo "mkdir -p $tmpdir && tar xzf $package -C $tmpdir"
+            remote_exec_sudo "/scripts/restore_user $username $tmpdir/*.tar.gz"
+            remote_exec_sudo "rm -rf $tmpdir"
+            log_info "Migration import complete."
+            ;;
+        transfer)
+            local username="${1:-}" dest_host="${2:-}"
+            [[ -z "$username" || -z "$dest_host" ]] && die "Usage: ${SCRIPT_NAME} migrate transfer <username> <dest-host>"
+            log_info "Transferring $username to $dest_host..."
+            local backup_file
+            backup_file=$(remote_exec_sudo "ls -t /backup/${username}_*.tar.gz | head -1")
+            [[ -z "$backup_file" ]] && die "No backup found. Run 'migrate prepare' first."
+            remote_exec "scp -P $SSH_PORT $backup_file ${SSH_USER}@${dest_host}:/tmp/"
+            log_warn "Now run on $dest_host: ${SCRIPT_NAME} migrate import $username /tmp/$(basename "$backup_file")"
+            ;;
+        *)
+            die "Unknown migrate subcommand: $subcmd. Use: prepare|import|transfer"
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Subcommand: logs
+# ---------------------------------------------------------------------------
+cmd_logs() {
+    local subcmd="${1:-tail}"
+    shift 2>/dev/null || true
+
+    case "$subcmd" in
+        tail)
+            local logname="${1:-access}"
+            local lines="${2:-50}"
+            validate_log_name "$logname"
+            validate_positive_integer "$lines" "line count"
+            case "$logname" in
+                access)
+                    remote_exec_sudo "tail -n $lines /usr/local/apache/domlogs/* 2>/dev/null | tail -100"
+                    ;;
+                error)
+                    remote_exec_sudo "tail -n $lines /usr/local/apache/logs/error_log 2>/dev/null"
+                    ;;
+                mail)
+                    remote_exec_sudo "tail -n $lines /var/log/maillog 2>/dev/null"
+                    ;;
+                auth)
+                    remote_exec_sudo "tail -n $lines /var/log/secure 2>/dev/null"
+                    ;;
+                cwp)
+                    remote_exec_sudo "tail -n $lines /usr/local/cwpsrv/logs/access_log 2>/dev/null"
+                    ;;
+                messages|secure|cron|boot)
+                    remote_exec_sudo "tail -n $lines /var/log/$logname 2>/dev/null" || die "Log not found: $logname"
+                    ;;
+            esac
+            ;;
+        search)
+            local pattern="${1:-}" logname="${2:-error}"
+            [[ -z "$pattern" ]] && die "Usage: ${SCRIPT_NAME} logs search <pattern> [log-name]"
+            validate_log_name "$logname"
+            # Validate pattern - reject dangerous shell characters
+            if [[ "$pattern" =~ [\;\&\|\`\$\(\)] ]]; then
+                die "Invalid search pattern: '$pattern' (contains unsafe characters)"
+            fi
+            log_info "Searching for '$pattern' in $logname log..."
+            case "$logname" in
+                error) remote_exec_sudo "grep -i '$pattern' /usr/local/apache/logs/error_log 2>/dev/null | tail -20" ;;
+                access) remote_exec_sudo "grep -i '$pattern' /usr/local/apache/domlogs/* 2>/dev/null | tail -20" ;;
+                mail) remote_exec_sudo "grep -i '$pattern' /var/log/maillog 2>/dev/null | tail -20" ;;
+                *) remote_exec_sudo "grep -i '$pattern' /var/log/$logname 2>/dev/null | tail -20" ;;
+            esac
+            ;;
+        errors)
+            local hours="${1:-1}"
+            validate_positive_integer "$hours" "hours"
+            log_info "Errors in the last $hours hour(s):"
+            remote_exec_sudo "journalctl --since '$hours hours ago' -p err --no-pager 2>/dev/null | tail -30"
+            ;;
+        *)
+            die "Unknown logs subcommand: $subcmd. Use: tail|search|errors"
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Usage / help
+# ---------------------------------------------------------------------------
+usage() {
+    cat <<EOF
+${BOLD}CWP CLI${NC} v${VERSION} - Command Line Interface for CWP Management
+
+${BOLD}USAGE:${NC}
+    ${SCRIPT_NAME} [OPTIONS] <COMMAND> [SUBCOMMAND] [ARGS...]
+
+${BOLD}OPTIONS:${NC}
+    --host <host>       CWP server hostname or IP
+    --api-key <key>     CWP API key
+    --api-port <port>   CWP API port (default: ${DEFAULT_API_PORT})
+    --ssh-user <user>   SSH username (default: ${DEFAULT_SSH_USER})
+    --ssh-port <port>   SSH port (default: ${DEFAULT_SSH_PORT})
+    --ssh-key <path>    SSH private key file
+    --output <format>   Output format: text|json
+    --verbose           Enable verbose/debug output
+    -h, --help          Show this help message
+    -v, --version       Show version
+
+${BOLD}COMMANDS:${NC}
+    ${CYAN}status${NC}                   Server status overview
+    ${CYAN}user${NC}       <sub> [args]   Manage user accounts
+    ${CYAN}database${NC}   <sub> [args]   Manage databases
+    ${CYAN}email${NC}      <sub> [args]   Manage email accounts
+    ${CYAN}dns${NC}        <sub> [args]   Manage DNS records
+    ${CYAN}ssl${NC}        <sub> [args]   Manage SSL certificates
+    ${CYAN}security${NC}   <sub> [args]   Security management
+    ${CYAN}backup${NC}     <sub> [args]   Backup management
+    ${CYAN}service${NC}    <sub> [args]   Service management
+    ${CYAN}php${NC}        <sub> [args]   PHP version management
+    ${CYAN}fix${NC}        <sub> [args]   Fix common issues
+    ${CYAN}optimize${NC}   <sub> [args]   Performance optimization
+    ${CYAN}migrate${NC}    <sub> [args]   Server migration tools
+    ${CYAN}logs${NC}       <sub> [args]   View and search logs
+
+${BOLD}SUBCOMMANDS BY COMMAND:${NC}
+    ${CYAN}user${NC}       list|info|add|delete|suspend|unsuspend|password
+    ${CYAN}database${NC}   list|create|delete|user-add|backup|restore|size
+    ${CYAN}email${NC}      list|create|delete|forwarders|queue|flush
+    ${CYAN}dns${NC}        list|zone|add-record|check
+    ${CYAN}ssl${NC}        list|info|install|renew|check
+    ${CYAN}security${NC}   status|firewall|ssh-hardening|updates|fail2ban
+    ${CYAN}backup${NC}     list|create|restore|verify|cleanup|schedule
+    ${CYAN}service${NC}    list|restart|stop|start|enable|disable|logs
+    ${CYAN}php${NC}        list|set|info|ini|extensions|fpm-status
+    ${CYAN}fix${NC}        auto|permissions|ownership|dns|ssl|mail
+    ${CYAN}optimize${NC}   all|mysql|php|apache|nginx|opcache|logs
+    ${CYAN}migrate${NC}    prepare|import|transfer
+    ${CYAN}logs${NC}       tail|search|errors
+
+${BOLD}CONFIG:${NC}
+    Configuration file: ${CONFIG_FILE}
+    Run '${SCRIPT_NAME} setup' for interactive configuration.
+
+${BOLD}EXAMPLES:${NC}
+    ${SCRIPT_NAME} status
+    ${SCRIPT_NAME} user list
+    ${SCRIPT_NAME} database create mydb
+    ${SCRIPT_NAME} ssl install example.com
+    ${SCRIPT_NAME} --host 10.0.0.1 --api-key KEY status
+    ${SCRIPT_NAME} backup create myuser
+    ${SCRIPT_NAME} logs search "404" access
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Main argument parser
+# ---------------------------------------------------------------------------
+main() {
+    load_config
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --host)       CWP_HOST="$2"; shift 2 ;;
+            --api-key)    CWP_API_KEY="$2"; shift 2 ;;
+            --api-port)   CWP_API_PORT="$2"; shift 2 ;;
+            --ssh-user)   SSH_USER="$2"; shift 2 ;;
+            --ssh-port)   SSH_PORT="$2"; shift 2 ;;
+            --ssh-key)    SSH_KEY="$2"; shift 2 ;;
+            --output)     OUTPUT_FORMAT="$2"; shift 2 ;;
+            --verbose)    VERBOSE=1; shift ;;
+            -v|--version) echo "CWP CLI v${VERSION}"; exit 0 ;;
+            -h|--help)    usage; exit 0 ;;
+            setup)        shift; cmd_setup "$@"; exit $? ;;
+            status)       shift; cmd_status "$@"; exit $? ;;
+            user)         shift; cmd_user "$@"; exit $? ;;
+            database)     shift; cmd_database "$@"; exit $? ;;
+            email)        shift; cmd_email "$@"; exit $? ;;
+            dns)          shift; cmd_dns "$@"; exit $? ;;
+            ssl)          shift; cmd_ssl "$@"; exit $? ;;
+            security)     shift; cmd_security "$@"; exit $? ;;
+            backup)       shift; cmd_backup "$@"; exit $? ;;
+            service)      shift; cmd_service "$@"; exit $? ;;
+            php)          shift; cmd_php "$@"; exit $? ;;
+            fix)          shift; cmd_fix "$@"; exit $? ;;
+            optimize)     shift; cmd_optimize "$@"; exit $? ;;
+            migrate)      shift; cmd_migrate "$@"; exit $? ;;
+            logs)         shift; cmd_logs "$@"; exit $? ;;
+            -*)           die "Unknown option: $1. Use --help for usage." ;;
+            *)            die "Unknown command: $1. Use --help for usage." ;;
+        esac
+    done
+
+    usage
+}
+
+# ---------------------------------------------------------------------------
+# Setup command (interactive)
+# ---------------------------------------------------------------------------
+cmd_setup() {
+    echo -e "${BOLD}=== CWP CLI Setup ===${NC}\n"
+
+    read -rp "CWP Server Host/IP [$CWP_HOST]: " input
+    CWP_HOST="${input:-$CWP_HOST}"
+
+    read -rp "CWP API Key []: " input
+    CWP_API_KEY="${input:-$CWP_API_KEY}"
+
+    read -rp "CWP API Port [$CWP_API_PORT]: " input
+    CWP_API_PORT="${input:-$CWP_API_PORT}"
+
+    read -rp "SSH User [$SSH_USER]: " input
+    SSH_USER="${input:-$SSH_USER}"
+
+    read -rp "SSH Port [$SSH_PORT]: " input
+    SSH_PORT="${input:-$SSH_PORT}"
+
+    read -rp "SSH Key Path [$SSH_KEY]: " input
+    SSH_KEY="${input:-$SSH_KEY}"
+
+    save_config
+
+    echo ""
+    log_info "Testing connection..."
+    if remote_exec "echo ok" &>/dev/null; then
+        log_info "Connection successful!"
+    else
+        log_warn "Could not connect. Verify your settings."
+    fi
+}
+
+# Run
+main "$@"

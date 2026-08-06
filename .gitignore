@@ -1,0 +1,25 @@
+# Runtime artifacts
+.playwright-mcp/
+.remember/
+.zcode/plans/
+.zcode/sessions/
+
+# Node.js
+servers/node_modules/
+node_modules/
+
+# Logs
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+*~
+
+# Environment files
+.env
+.env.local

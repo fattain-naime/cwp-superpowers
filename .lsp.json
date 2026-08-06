@@ -1,0 +1,31 @@
+{
+  "php": {
+    "command": "intelephense",
+    "args": ["--stdio"],
+    "extensionToLanguage": {
+      ".php": "php"
+    },
+    "initializationOptions": {
+      "storagePath": "${CLAUDE_PLUGIN_DATA}/intelephense"
+    },
+    "settings": {
+      "intelephense.environment.phpVersion": "8.1",
+      "intelephense.diagnostics.enable": true,
+      "intelephense.diagnostics.run": "onType"
+    },
+    "restartOnCrash": true,
+    "maxRestarts": 3,
+    "diagnostics": true
+  },
+  "bash": {
+    "command": "bash-language-server",
+    "args": ["start"],
+    "extensionToLanguage": {
+      ".sh": "bash",
+      ".bash": "bash"
+    },
+    "restartOnCrash": true,
+    "maxRestarts": 3,
+    "diagnostics": true
+  }
+}

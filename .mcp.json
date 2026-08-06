@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "cwp-api": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/servers/cwp-mcp-server.js"],
+      "env": {
+        "CWP_HOST": "${CWP_HOST:-localhost}",
+        "CWP_API_KEY": "${CWP_API_KEY}",
+        "CWP_API_PORT": "${CWP_API_PORT:-2304}"
+      }
+    }
+  }
+}

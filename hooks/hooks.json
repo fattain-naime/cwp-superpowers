@@ -1,0 +1,145 @@
+{
+  "description": "CWP AI Agent Plugin hooks for server management automation and safety",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/load-server-context.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/validate-command.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__plugin_cwp-pro-centos_cwp-api__*",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "Validate this CWP API call. Check that the parameters are reasonable and the operation is safe. If it's a destructive operation (delete, suspend), confirm the user's intent. Return 'approve' or 'deny' with reason.",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/check-server-health.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/validate-config-syntax.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "mcp__plugin_cwp-pro-centos_cwp-api__*",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "A CWP API call failed. Analyze the error and suggest troubleshooting steps. Common issues: API key not set, port 2304 blocked, CWP API disabled, invalid parameters.",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "Verify that all CWP operations were completed successfully. Check for any errors or warnings in the conversation. If issues remain unresolved, provide recommendations for next steps.",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "cwp-*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "mkdir -p ${CLAUDE_PLUGIN_ROOT}/logs && echo \"[CWP] Agent started: $(date)\" >> ${CLAUDE_PLUGIN_ROOT}/logs/agent-sessions.log 2>/dev/null || true",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "Verify the subagent completed its CWP task successfully. If the task was security auditing, performance optimization, troubleshooting, migration planning, or backup management, summarize the key findings and any action items.",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "Preserve critical CWP context before compaction. Include: server IP, CWP version, active services, any ongoing issues, pending operations, and recent changes made.",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "mkdir -p ${CLAUDE_PLUGIN_ROOT}/logs && echo \"[CWP] Session ended: $(date)\" >> ${CLAUDE_PLUGIN_ROOT}/logs/agent-sessions.log 2>/dev/null || true",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "FileChanged": [
+      {
+        "matcher": "csf.conf|main.cf|nginx.conf|httpd.conf|my.cnf",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "A critical CWP configuration file was changed externally. Identify which file changed and warn about potential service impact. Suggest verifying the change and restarting affected services.",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

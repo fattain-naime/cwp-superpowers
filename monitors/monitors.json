@@ -1,0 +1,33 @@
+[
+  {
+    "name": "cwp-error-log",
+    "command": "tail -F /var/log/cwp/webservers.log 2>/dev/null || echo 'CWP log not available'",
+    "description": "CWP webserver error log - monitors panel and web server errors"
+  },
+  {
+    "name": "apache-error-log",
+    "command": "tail -F /usr/local/apache/logs/error_log 2>/dev/null || echo 'Apache log not available'",
+    "description": "Apache error log - monitors web server errors and PHP failures"
+  },
+  {
+    "name": "mail-log",
+    "command": "tail -F /var/log/maillog 2>/dev/null | grep -i 'error\\|reject\\|bounce' || echo 'Mail log not available'",
+    "description": "Mail log - monitors email errors, rejections, and bounces"
+  },
+  {
+    "name": "mysql-error-log",
+    "command": "tail -F /var/lib/mysql/*.err 2>/dev/null || echo 'MySQL log not available'",
+    "description": "MySQL/MariaDB error log - monitors database crashes and errors"
+  },
+  {
+    "name": "security-log",
+    "command": "tail -F /var/log/secure 2>/dev/null | grep -i 'failed\\|invalid\\|refused' || echo 'Security log not available'",
+    "description": "Security log - monitors failed login attempts and access denials"
+  },
+  {
+    "name": "csf-blocked-ips",
+    "command": "while true; do csf -g 2>/dev/null | head -20 || echo 'CSF not available'; sleep 60; done",
+    "description": "CSF Firewall - monitors blocked IPs and firewall activity",
+    "when": "on-skill-invoke:cwp-security"
+  }
+]

@@ -1,0 +1,40 @@
+{
+  "cli": {
+    "path": "cli/cwp",
+    "completions": {
+      "bash": "cli/cwp-completion.bash",
+      "zsh": "cli/cwp-completion.zsh"
+    }
+  },
+
+  "scripts": {
+    "install": "scripts/install.sh",
+    "uninstall": "scripts/uninstall.sh",
+    "setup": "scripts/setup.sh",
+    "api-client": "scripts/cwp-api-client.sh",
+    "remote-exec": "scripts/cwp-remote-exec.sh",
+    "backup-verify": "scripts/cwp-backup-verify.sh",
+    "security-scan": "scripts/cwp-security-scan.sh",
+    "health-check": "scripts/cwp-health-check.sh"
+  },
+
+  "templates": [
+    "templates/vhost-apache.tpl",
+    "templates/vhost-nginx.tpl",
+    "templates/vhost-varnish.tpl",
+    "templates/dns-zone.tpl",
+    "templates/backup-config.tpl",
+    "templates/email-config.tpl",
+    "templates/php-fpm-pool.tpl"
+  ],
+
+  "requirements": {
+    "bash": ">=4.0",
+    "tools": ["ssh", "curl"],
+    "optional": ["jq", "node"],
+    "server": {
+      "os": ["AlmaLinux 9", "CentOS 7/8", "RHEL 8/9"],
+      "panel": "CWP (Control Web Panel)"
+    }
+  }
+}
