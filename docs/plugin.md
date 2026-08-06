@@ -165,7 +165,7 @@ cwp-pro-centos/
 │   └── scripts/
 │       ├── validate-command.sh        # Command validation
 │       ├── check-server-health.sh     # Health check
-│       └── load-server-context.sh     # Context loading
+│       └── validate-config-syntax.sh  # Config syntax validation
 ├── .mcp.json                          # MCP server configuration
 ├── servers/
 │   └── cwp-mcp-server.js              # MCP server implementation
@@ -225,13 +225,15 @@ cwp-pro-centos/
 ```json
 {
   "name": "cwp-pro-centos",
+  "displayName": "CWP Pro - AI Agent for Control Web Panel",
   "version": "1.0.0",
-  "description": "AI-powered God Mode plugin for CWP (Control Web Panel) management. Install, configure, troubleshoot, and manage CWP servers with natural language commands.",
+  "description": "AI-powered God Mode plugin for CWP (Control Web Panel) management. Install, configure, troubleshoot, and manage CWP servers with natural language commands. Covers web servers, PHP, databases, email, DNS, SSL, security, backups, migration, and performance optimization.",
   "author": {
-    "name": "CWP AI Agent Team",
-    "url": "https://github.com/cwp-pro-centos"
+    "name": "Fattain Naime",
+    "url": "https://github.com/fattain-naime"
   },
-  "homepage": "https://github.com/cwp-pro-centos/cwp-pro-centos",
+  "homepage": "https://github.com/fattain-naime/cwp-superpowers",
+  "repository": "https://github.com/fattain-naime/cwp-superpowers",
   "license": "MIT",
   "keywords": [
     "cwp",
@@ -249,11 +251,7 @@ cwp-pro-centos/
     "backup",
     "migration"
   ],
-  "commands": "./commands",
-  "agents": "./agents",
-  "skills": "./skills",
-  "hooks": "./hooks/hooks.json",
-  "mcpServers": "./.mcp.json"
+  "monitors": "./monitors/monitors.json"
 }
 ```
 
@@ -430,9 +428,9 @@ version: 1.0.0
 
 | Tool | Behavior | Versions |
 |------|----------|----------|
-| **PHP Switcher** | ONE default PHP for all users | 5.3-8.1+ |
-| **PHP Selector** | Multiple versions via .htaccess | 4.4-8.1 |
-| **PHP-FPM Selector** | Per-domain via Domain Conf | 5.3-8.1+ (CWP Pro) |
+| **PHP Switcher** | ONE default PHP for all users | 5.3-8.3+ |
+| **PHP Selector** | Multiple versions via .htaccess | 4.4-8.3 |
+| **PHP-FPM Selector** | Per-domain via Domain Conf | 5.3-8.3+ (CWP Pro) |
 
 ## Configuration Paths
 
@@ -1618,22 +1616,12 @@ Provide a backup management report with:
 
 ### hooks.json
 
+The plugin registers 8 hook event types for server management automation and safety:
+
 ```json
 {
-  "description": "CWP AI Agent Plugin hooks for server management automation",
+  "description": "CWP AI Agent Plugin hooks for server management automation and safety",
   "hooks": {
-    "SessionStart": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/load-server-context.sh",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
     "PreToolUse": [
       {
         "matcher": "Bash",
@@ -1642,6 +1630,16 @@ Provide a backup management report with:
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/validate-command.sh",
             "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__plugin_cwp-pro-centos_cwp-api__*",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "Validate this CWP API call. Check that the parameters are reasonable and the operation is safe. If it's a destructive operation (delete, suspend), confirm the user's intent. Return 'approve' or 'deny' with reason.",
+            "timeout": 15
           }
         ]
       }
@@ -1656,6 +1654,28 @@ Provide a backup management report with:
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/validate-config-syntax.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "mcp__plugin_cwp-pro-centos_cwp-api__*",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "A CWP API call failed. Analyze the error and suggest troubleshooting steps. Common issues: API key not set, port 2304 blocked, CWP API disabled, invalid parameters.",
+            "timeout": 15
+          }
+        ]
       }
     ],
     "Stop": [
@@ -1664,8 +1684,56 @@ Provide a backup management report with:
         "hooks": [
           {
             "type": "prompt",
-            "prompt": "Verify that all CWP operations were completed successfully. Check for any errors or warnings. If issues remain unresolved, provide recommendations.",
+            "prompt": "Verify that all CWP operations were completed successfully. Check for any errors or warnings in the conversation. If issues remain unresolved, provide recommendations for next steps.",
             "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "cwp-*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "mkdir -p ${CLAUDE_PLUGIN_ROOT}/logs && echo \"[CWP] Agent started: $(date)\" >> ${CLAUDE_PLUGIN_ROOT}/logs/agent-sessions.log 2>/dev/null || true",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "Verify the subagent completed its CWP task successfully. If the task was security auditing, performance optimization, troubleshooting, migration planning, or backup management, summarize the key findings and any action items.",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "Preserve critical CWP context before compaction. Include: server IP, CWP version, active services, any ongoing issues, pending operations, and recent changes made.",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "FileChanged": [
+      {
+        "matcher": "csf.conf|main.cf|nginx.conf|httpd.conf|my.cnf",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "A critical CWP configuration file was changed externally. Identify which file changed and warn about potential service impact. Suggest verifying the change and restarting affected services.",
+            "timeout": 10
           }
         ]
       }
@@ -1676,45 +1744,12 @@ Provide a backup management report with:
 
 ### Hook Scripts
 
-#### load-server-context.sh
-
-```bash
-#!/bin/bash
-# Load CWP server context on session start
-
-set -euo pipefail
-
-# Detect CWP installation
-if [ -f "/scripts/cwp_version" ]; then
-    CWP_VERSION=$(sh /scripts/cwp_version 2>/dev/null || echo "unknown")
-    echo "export CWP_VERSION=\"$CWP_VERSION\"" >> "$CLAUDE_ENV_FILE"
-    echo "export CWP_INSTALLED=true" >> "$CLAUDE_ENV_FILE"
-    
-    # Detect OS
-    if [ -f "/etc/os-release" ]; then
-        OS_ID=$(grep "^ID=" /etc/os-release | cut -d= -f2 | tr -d '"')
-        OS_VERSION=$(grep "^VERSION_ID=" /etc/os-release | cut -d= -f2 | tr -d '"')
-        echo "export CWP_OS=\"$OS_ID $OS_VERSION\"" >> "$CLAUDE_ENV_FILE"
-    fi
-    
-    # Detect web server
-    if systemctl is-active --quiet httpd 2>/dev/null; then
-        echo "export CWP_WEBSERVER=apache" >> "$CLAUDE_ENV_FILE"
-    elif systemctl is-active --quiet nginx 2>/dev/null; then
-        echo "export CWP_WEBSERVER=nginx" >> "$CLAUDE_ENV_FILE"
-    fi
-    
-    # Detect PHP version
-    PHP_VERSION=$(php -v 2>/dev/null | head -1 | awk '{print $2}' || echo "unknown")
-    echo "export CWP_PHP_VERSION=\"$PHP_VERSION\"" >> "$CLAUDE_ENV_FILE"
-fi
-```
-
 #### validate-command.sh
 
 ```bash
 #!/bin/bash
 # Validate CWP commands before execution
+# Blocks dangerous commands that could damage the server
 
 set -euo pipefail
 
@@ -1728,28 +1763,61 @@ fi
 # Block dangerous commands
 DANGEROUS_PATTERNS=(
     "rm -rf /"
+    "rm -rf /\*"
     "mkfs"
     "dd if="
     "> /dev/sd"
     "chmod 777 /"
+    "chmod -R 777 /"
     "chown -R root /"
+    ":(){:|:&};:"
+    "mv / /"
+    "wget.*|.*sh"
+    "curl.*|.*sh"
 )
 
 for pattern in "${DANGEROUS_PATTERNS[@]}"; do
-    if echo "$tool_input" | grep -q "$pattern"; then
-        echo '{"decision": "deny", "reason": "Dangerous command detected: '"$pattern"'"}' >&2
+    if echo "$tool_input" | grep -qE "$pattern"; then
+        if command -v jq &>/dev/null; then
+            jq -n --arg p "$pattern" '{"decision": "deny", "reason": ("Dangerous command detected: " + $p + ". This command could damage the server.")}' >&2
+        else
+            echo '{"decision": "deny", "reason": "Dangerous command detected. This command could damage the server."}' >&2
+        fi
         exit 2
+    fi
+done
+
+# Warn about sensitive operations
+SENSITIVE_PATTERNS=(
+    "rm -rf"
+    "systemctl stop"
+    "systemctl disable"
+    "iptables -F"
+    "csf -x"
+)
+
+for pattern in "${SENSITIVE_PATTERNS[@]}"; do
+    if echo "$tool_input" | grep -qF "$pattern"; then
+        if command -v jq &>/dev/null; then
+            jq -n --arg p "$pattern" '{"systemMessage": ("⚠️ Sensitive operation detected: " + $p + ". Proceed with caution.")}' >&2
+        else
+            echo '{"systemMessage": "⚠️ Sensitive operation detected. Proceed with caution."}' >&2
+        fi
+        exit 0
     fi
 done
 
 exit 0
 ```
 
+**Note:** This script uses `jq` for JSON construction and `grep -qE` (extended regex mode) for pattern matching. It also warns about sensitive operations without blocking them.
+
 #### check-server-health.sh
 
 ```bash
 #!/bin/bash
 # Check server health after CWP operations
+# Warns if critical services are down after commands
 
 set -euo pipefail
 
@@ -1757,7 +1825,7 @@ input=$(cat)
 tool_input=$(echo "$input" | jq -r '.tool_input.command // empty')
 
 # Only check after CWP-related commands
-if ! echo "$tool_input" | grep -qE "(cwp|httpd|nginx|mariadb|postfix|dovecot)"; then
+if ! echo "$tool_input" | grep -qE "(cwp|httpd|nginx|mariadb|postfix|dovecot|named|csf)"; then
     exit 0
 fi
 
@@ -1765,7 +1833,7 @@ fi
 ISSUES=()
 
 if ! systemctl is-active --quiet httpd 2>/dev/null && ! systemctl is-active --quiet nginx 2>/dev/null; then
-    ISSUES+=("Web server is not running")
+    ISSUES+=("Web server (httpd/nginx) is not running")
 fi
 
 if ! systemctl is-active --quiet mariadb 2>/dev/null; then
@@ -1773,15 +1841,85 @@ if ! systemctl is-active --quiet mariadb 2>/dev/null; then
 fi
 
 if [ ${#ISSUES[@]} -gt 0 ]; then
-    echo "⚠️ Server health issues detected:" >&2
+    MSG="⚠️ Server health issues detected after command execution:"
     for issue in "${ISSUES[@]}"; do
-        echo "  - $issue" >&2
+        MSG="$MSG\n  - $issue"
     done
+    if command -v jq &>/dev/null; then
+        jq -n --arg msg "$MSG" '{"systemMessage": $msg}' >&2
+    else
+        # Fallback: escape for JSON safety
+        ESCAPED_MSG=$(printf '%s' "$MSG" | sed 's/\\/\\\\/g; s/"/\\"/g')
+        echo "{\"systemMessage\": \"$ESCAPED_MSG\"}" >&2
+    fi
     exit 2
 fi
 
 exit 0
 ```
+
+**Note:** This script uses `jq` for JSON output construction, with a fallback that escapes the message for JSON safety when `jq` is not available.
+
+#### validate-config-syntax.sh
+
+```bash
+#!/bin/bash
+# Validate configuration file syntax after edits
+# Checks Apache, Nginx, PHP, and BIND configs for syntax errors
+
+set -euo pipefail
+
+input=$(cat)
+file_path=$(echo "$input" | jq -r '.tool_input.file_path // empty')
+
+if [ -z "$file_path" ]; then
+    exit 0
+fi
+
+# Check Apache configs
+if echo "$file_path" | grep -qE "(httpd|apache|vhost).*\.(conf|tpl)$"; then
+    if httpd -t 2>&1 | grep -q "Syntax OK"; then
+        exit 0
+    else
+        jq -n --arg fp "$file_path" '{"systemMessage": "⚠️ Apache config syntax error detected after editing \($fp). Run: httpd -t"}' >&2
+        exit 2
+    fi
+fi
+
+# Check Nginx configs
+if echo "$file_path" | grep -qE "(nginx|vhost).*\.(conf|tpl)$"; then
+    if nginx -t 2>&1 | grep -q "syntax is ok"; then
+        exit 0
+    else
+        jq -n --arg fp "$file_path" '{"systemMessage": "⚠️ Nginx config syntax error detected after editing \($fp). Run: nginx -t"}' >&2
+        exit 2
+    fi
+fi
+
+# Check BIND zone files
+if echo "$file_path" | grep -qE "\.db$|named|bind"; then
+    if named-checkconf 2>&1 | grep -q "no errors"; then
+        exit 0
+    else
+        jq -n --arg fp "$file_path" '{"systemMessage": "⚠️ BIND config syntax error detected after editing \($fp). Run: named-checkconf"}' >&2
+        exit 2
+    fi
+fi
+
+# Check PHP configs
+if echo "$file_path" | grep -qE "php\.ini|php-fpm.*\.conf$"; then
+    if php -l "$file_path" 2>&1 | grep -q "No syntax errors"; then
+        exit 0
+    else
+        jq -n --arg fp "$file_path" '{"systemMessage": "⚠️ PHP config syntax error detected after editing \($fp). Run: php -l \($fp)"}' >&2
+        exit 2
+    fi
+fi
+
+exit 0
+```
+
+**Note:** This script is triggered on `PostToolUse` for `Write|Edit` operations. It validates Apache, Nginx, BIND, and PHP config file syntax after edits.
 
 ---
 
@@ -1791,17 +1929,25 @@ exit 0
 
 ```json
 {
-  "cwp-api": {
-    "command": "bash",
-    "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/cwp-api-client.sh"],
-    "env": {
-      "CWP_HOST": "${CWP_HOST}",
-      "CWP_API_KEY": "${CWP_API_KEY}",
-      "CWP_API_PORT": "2304"
+  "mcpServers": {
+    "cwp-api": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/servers/cwp-mcp-server.js"],
+      "env": {
+        "CWP_HOST": "${CWP_HOST:-localhost}",
+        "CWP_API_KEY": "${CWP_API_KEY}",
+        "CWP_API_PORT": "${CWP_API_PORT:-2304}"
+      }
     }
   }
 }
 ```
+
+**Security Notes:**
+- The MCP server uses a **30-second timeout** for all API requests and service status checks
+- **Path traversal protection** is enforced: backup file paths are validated to prevent `../` attacks
+- Input sanitization is applied to all user-supplied parameters before shell execution
 
 ### MCP Tools Provided
 
@@ -4143,7 +4289,7 @@ AI-powered God Mode plugin for CWP (Control Web Panel) management.
 
 ```bash
 # Clone repository
-git clone https://github.com/cwp-pro-centos/cwp-pro-centos.git
+git clone https://github.com/fattain-naime/cwp-superpowers.git
 
 # Run installer
 cd cwp-pro-centos
@@ -4257,6 +4403,8 @@ SOFTWARE.
 
 **Location:** `${CLAUDE_PLUGIN_ROOT}/config.json`
 
+**Note:** The `php_version` default is `8.3` but the actual version depends on what is compiled or selected on the server. Use `php -v` to check the active version, or check CWP Admin for available versions.
+
 ```json
 {
   "server": {
@@ -4265,7 +4413,7 @@ SOFTWARE.
     "ssh_port": 22
   },
   "defaults": {
-    "php_version": "8.1",
+    "php_version": "8.3",
     "web_server": "nginx+apache",
     "mysql_version": "10.11"
   },
@@ -4279,6 +4427,52 @@ SOFTWARE.
     "retention_days": 30,
     "remote_destination": ""
   }
+}
+```
+
+### settings.json
+
+**Location:** `${CLAUDE_PLUGIN_ROOT}/settings.json`
+
+The plugin uses `allowedTools` to pre-approve specific Bash command patterns that are safe for CWP management. This avoids repeated permission prompts during common operations.
+
+```json
+{
+  "allowedTools": [
+    "Bash(cwp *)",
+    "Bash(systemctl status *)",
+    "Bash(systemctl restart *)",
+    "Bash(systemctl is-active *)",
+    "Bash(ss -tlnp*)",
+    "Bash(df -h*)",
+    "Bash(free -h*)",
+    "Bash(cat /proc/loadavg*)",
+    "Bash(tail *)",
+    "Bash(grep *)",
+    "Bash(ls *)",
+    "Bash(cat /etc/csf/csf.conf*)",
+    "Bash(cat /var/named/*.db*)",
+    "Bash(cat /etc/postfix/main.cf*)",
+    "Bash(cat /etc/nginx/nginx.conf*)",
+    "Bash(cat /usr/local/apache/conf/httpd.conf*)",
+    "Bash(cat /etc/my.cnf*)",
+    "Bash(mysql -e *)",
+    "Bash(mysqldump *)",
+    "Bash(postqueue -p*)",
+    "Bash(mailq*)",
+    "Bash(csf *)",
+    "Bash(apachectl *)",
+    "Bash(nginx -t*)",
+    "Bash(named-checkconf*)",
+    "Bash(php -v*)",
+    "Bash(php -m*)",
+    "Bash(php --ini*)",
+    "Bash(varnishstat*)",
+    "Bash(redis-cli *)",
+    "Bash(dig *)",
+    "Bash(openssl *)",
+    "Bash(journalctl *)"
+  ]
 }
 ```
 
@@ -4394,7 +4588,7 @@ Use a dedicated test server:
 
 ```bash
 # Clone repository
-git clone https://github.com/cwp-pro-centos/cwp-pro-centos.git
+git clone https://github.com/fattain-naime/cwp-superpowers.git
 
 # Install plugin
 claude plugin install ./cwp-pro-centos
