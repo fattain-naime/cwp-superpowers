@@ -17,6 +17,21 @@ Manage MySQL/MariaDB, PostgreSQL, and MongoDB databases on CWP servers. Handle d
 | PostgreSQL | Optional install | phpPgAdmin |
 | MongoDB | Optional install | MongoDB Manager |
 
+## Service Detection
+
+Detect which database services are installed:
+
+```bash
+# MariaDB (installed by default)
+systemctl is-active mariadb 2>/dev/null && echo "MariaDB: active" || echo "MariaDB: not running"
+
+# PostgreSQL (optional)
+systemctl is-active postgresql 2>/dev/null && echo "PostgreSQL: active" || echo "PostgreSQL: not installed"
+
+# MongoDB (optional)
+systemctl is-active mongod 2>/dev/null && echo "MongoDB: active" || echo "MongoDB: not installed"
+```
+
 ## MariaDB/MySQL
 
 ### Configuration Files

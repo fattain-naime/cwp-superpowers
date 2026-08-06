@@ -22,6 +22,24 @@ Use multiple caching and optimization layers:
 | Compression | Brotli, gzip |
 | Application | LiteSpeed Cache, WordPress caching plugins |
 
+## Service Detection
+
+Detect which caching services are installed:
+
+```bash
+# Redis
+systemctl is-active redis 2>/dev/null && echo "Redis: active" || echo "Redis: not running"
+
+# Memcached
+systemctl is-active memcached 2>/dev/null && echo "Memcached: active" || echo "Memcached: not installed"
+
+# Varnish
+systemctl is-active varnish 2>/dev/null && echo "Varnish: active" || echo "Varnish: not running"
+
+# OPcache (check PHP)
+php -m 2>/dev/null | grep -i opcache && echo "OPcache: loaded" || echo "OPcache: not loaded"
+```
+
 ## Caching Compatibility
 
 | Cache | suPHP | PHP-FPM |

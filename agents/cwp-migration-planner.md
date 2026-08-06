@@ -20,6 +20,8 @@ tools: ["Read", "Bash", "Grep"]
 disallowedTools: ["Write", "Edit"]
 effort: high
 maxTurns: 30
+maxConcurrent: 3
+background: true
 skills: ["cwp-migration", "cwp-backup", "cwp-core"]
 ---
 
@@ -94,3 +96,12 @@ Post-Migration:
 - Outstanding issues requiring attention
 
 Include a rollback plan in case the migration needs to be reversed.
+
+## Subagent Dispatching
+
+This agent can dispatch other CWP agents for complex migrations:
+
+- **cwp-backup-manager** — Run before migration to create source server backups
+- **cwp-security-auditor** — Run after migration to verify security posture on destination
+
+To dispatch: Use the Agent tool with the target agent name. The migration planner coordinates the workflow while subagents handle specialized tasks in parallel.

@@ -19,6 +19,7 @@ color: yellow
 tools: ["Read", "Bash", "Grep", "Write", "Edit"]
 effort: medium
 maxTurns: 20
+maxConcurrent: 3
 skills: ["cwp-troubleshooting", "cwp-core"]
 ---
 

@@ -29,5 +29,46 @@
     "command": "while true; do csf -g 2>/dev/null | head -20 || echo 'CSF not available'; sleep 60; done",
     "description": "CSF Firewall - monitors blocked IPs and firewall activity",
     "when": "on-skill-invoke:cwp-security"
+  },
+  {
+    "name": "nginx-error-log",
+    "command": "tail -F /var/log/nginx/error.log 2>/dev/null || echo 'Nginx log not available'",
+    "description": "Nginx error log - monitors reverse proxy and web server errors"
+  },
+  {
+    "name": "php-fpm-error-log",
+    "command": "tail -F /opt/alt/php*/var/log/php-fpm-error.log 2>/dev/null || tail -F /var/log/php-fpm/error.log 2>/dev/null || echo 'PHP-FPM log not available'",
+    "description": "PHP-FPM error log - monitors PHP process manager errors"
+  },
+  {
+    "name": "varnish-log",
+    "command": "tail -F /var/log/varnish/varnish.log 2>/dev/null || echo 'Varnish log not available'",
+    "description": "Varnish cache log - monitors cache hit/miss and errors"
+  },
+  {
+    "name": "lfd-log",
+    "command": "tail -F /var/log/lfd.log 2>/dev/null | grep -i 'blocked\\|attack\\|exceeded' || echo 'LFD log not available'",
+    "description": "LFD intrusion detection - monitors blocked IPs and attack detection"
+  },
+  {
+    "name": "cwp-panel-log",
+    "command": "tail -F /usr/local/cwpsrv/logs/error.log 2>/dev/null || echo 'CWP panel log not available'",
+    "description": "CWP panel error log - monitors admin panel and API errors"
+  },
+  {
+    "name": "redis-info",
+    "command": "while true; do redis-cli INFO stats 2>/dev/null | grep -E 'keyspace_hits|keyspace_misses|connected_clients' || echo 'Redis not available'; sleep 60; done",
+    "description": "Redis statistics - monitors cache hit rate and connections",
+    "when": "on-skill-invoke:cwp-performance"
+  },
+  {
+    "name": "system-journal-errors",
+    "command": "journalctl -f -p err --no-pager 2>/dev/null || echo 'Journal not available'",
+    "description": "System journal errors - monitors all system-level errors"
+  },
+  {
+    "name": "mysql-slow-log",
+    "command": "tail -F /var/log/mysql/slow.log 2>/dev/null || tail -F /var/lib/mysql/*-slow.log 2>/dev/null || echo 'MySQL slow log not available'",
+    "description": "MySQL slow query log - monitors slow database queries"
   }
 ]

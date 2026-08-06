@@ -20,6 +20,7 @@ tools: ["Read", "Bash", "Grep"]
 disallowedTools: ["Write", "Edit"]
 effort: high
 maxTurns: 25
+maxConcurrent: 3
 skills: ["cwp-performance", "cwp-core"]
 ---
 

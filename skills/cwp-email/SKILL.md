@@ -21,6 +21,24 @@ Manage Postfix, Dovecot, Roundcube, spam filtering, and email authentication on 
 | Rate Limiting | Policyd (cbpolicyd) | Email rate limiting |
 | Alternative Anti-spam | Rspamd | Lightweight spam filter |
 
+## Service Detection
+
+Detect which email services are installed:
+
+```bash
+# SpamAssassin (optional)
+systemctl is-active spamassassin 2>/dev/null && echo "SpamAssassin: active" || echo "SpamAssassin: not installed"
+
+# ClamAV (optional)
+systemctl is-active clamd 2>/dev/null && echo "ClamAV: active" || echo "ClamAV: not installed"
+
+# Rspamd (optional)
+systemctl is-active rspamd 2>/dev/null && echo "Rspamd: active" || echo "Rspamd: not installed"
+
+# Policyd (optional)
+systemctl is-active cbpolicyd 2>/dev/null && echo "Policyd: active" || echo "Policyd: not installed"
+```
+
 ## Configuration Files
 
 | File | Purpose |

@@ -20,6 +20,24 @@ Choose from multiple web server stacks. The selected stack determines how reques
 | Apache + suPHP | Legacy compatibility | Legacy PHP apps |
 | LiteSpeed Enterprise | Commercial option | Enterprise hosting |
 
+## Service Detection
+
+Detect which web servers are installed:
+
+```bash
+# Apache
+systemctl is-active httpd 2>/dev/null && echo "Apache: active" || echo "Apache: not running"
+
+# Nginx
+systemctl is-active nginx 2>/dev/null && echo "Nginx: active" || echo "Nginx: not running"
+
+# Varnish
+systemctl is-active varnish 2>/dev/null && echo "Varnish: active" || echo "Varnish: not running"
+
+# LiteSpeed (optional)
+systemctl is-active lsws 2>/dev/null && echo "LiteSpeed: active" || echo "LiteSpeed: not installed"
+```
+
 ## Port Mapping
 
 | Port | Service |

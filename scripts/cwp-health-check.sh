@@ -322,6 +322,108 @@ send_notification() {
 }
 
 # ---------------------------------------------------------------------------
+# Check: Varnish
+# ---------------------------------------------------------------------------
+check_varnish() {
+    log_header "Varnish Cache"
+
+    local varnish_status
+    varnish_status=$(remote_exec_sudo "systemctl is-active varnish 2>/dev/null" || echo "unknown")
+
+    if [[ "$varnish_status" == "active" ]]; then
+        log_ok "Varnish is running"
+        local cache_stats
+        cache_stats=$(remote_exec_sudo "varnishstat -1 -f MAIN.cache_hit -f MAIN.cache_miss 2>/dev/null | head -3" || echo "")
+        if [[ -n "$cache_stats" ]]; then
+            echo "$cache_stats"
+        fi
+    elif [[ "$varnish_status" == "unknown" ]]; then
+        log_ok "Varnish not installed (skipped)"
+    else
+        log_warn "Varnish is $varnish_status"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Check: Redis
+# ---------------------------------------------------------------------------
+check_redis() {
+    log_header "Redis"
+
+    local redis_status
+    redis_status=$(remote_exec_sudo "systemctl is-active redis 2>/dev/null" || echo "unknown")
+
+    if [[ "$redis_status" == "active" ]]; then
+        log_ok "Redis is running"
+        local mem
+        mem=$(remote_exec_sudo "redis-cli INFO memory 2>/dev/null | grep 'used_memory_human' | cut -d: -f2 | tr -d '\r'" || echo "")
+        if [[ -n "$mem" ]]; then
+            echo "  Memory: $mem"
+        fi
+    elif [[ "$redis_status" == "unknown" ]]; then
+        log_ok "Redis not installed (skipped)"
+    else
+        log_warn "Redis is $redis_status"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Check: SSL Certificate Expiry
+# ---------------------------------------------------------------------------
+check_ssl_expiry() {
+    log_header "SSL Certificates"
+
+    local domains
+    domains=$(remote_exec_sudo "ls /etc/letsencrypt/live/ 2>/dev/null" || echo "")
+
+    if [[ -z "$domains" ]]; then
+        log_ok "No Let's Encrypt certificates found"
+        return
+    fi
+
+    while IFS= read -r domain; do
+        [[ -z "$domain" ]] && continue
+        local expiry
+        expiry=$(remote_exec_sudo "openssl x509 -enddate -noout -in /etc/letsencrypt/live/${domain}/cert.pem 2>/dev/null" || echo "")
+        if [[ -n "$expiry" ]]; then
+            local expiry_date
+            expiry_date=$(echo "$expiry" | cut -d= -f2)
+            local expiry_epoch
+            expiry_epoch=$(remote_exec "date -d '$expiry_date' +%s 2>/dev/null" || echo "0")
+            local now_epoch
+            now_epoch=$(remote_exec "date +%s" || echo "0")
+            local days_left=$(( (expiry_epoch - now_epoch) / 86400 ))
+
+            if [[ "$days_left" -lt 0 ]]; then
+                log_crit "$domain certificate EXPIRED!"
+            elif [[ "$days_left" -lt 14 ]]; then
+                log_crit "$domain expires in $days_left days"
+            elif [[ "$days_left" -lt 30 ]]; then
+                log_warn "$domain expires in $days_left days"
+            else
+                log_ok "$domain valid for $days_left days"
+            fi
+        fi
+    done <<< "$domains"
+}
+
+# ---------------------------------------------------------------------------
+# Check: DNS Resolution
+# ---------------------------------------------------------------------------
+check_dns() {
+    log_header "DNS Resolution"
+
+    local dns_check
+    dns_check=$(remote_exec "dig +short google.com A 2>/dev/null | head -1" || echo "")
+
+    if [[ -n "$dns_check" ]]; then
+        log_ok "DNS resolution working (google.com -> $dns_check)"
+    else
+        log_crit "DNS resolution failed!"
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 print_summary() {
@@ -422,6 +524,10 @@ check_mysql
 check_errors
 check_webserver
 check_mail
+check_varnish
+check_redis
+check_ssl_expiry
+check_dns
 
 print_summary
 
