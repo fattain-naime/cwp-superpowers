@@ -2,7 +2,6 @@
   "name": "cwp-pro-centos",
   "displayName": "CWP Pro - AI Agent for Control Web Panel",
   "version": "1.0.0",
-  "minVersion": "2.1.223",
   "description": "AI-powered God Mode plugin for CWP (Control Web Panel) management. Install, configure, troubleshoot, and manage CWP servers with natural language commands. Covers web servers, PHP, databases, email, DNS, SSL, security, backups, migration, and performance optimization.",
   "author": {
     "name": "Fattain Naime",
@@ -27,5 +26,7 @@
     "backup",
     "migration"
   ],
-  "monitors": "./monitors/monitors.json"
+  "experimental": {
+    "monitors": "./monitors/monitors.json"
+  }
 }
