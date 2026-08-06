@@ -1,0 +1,53 @@
+name: Test Plugin
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Validate JSON files
+        run: |
+          for f in .mcp.json config.json settings.json hooks/hooks.json .claude-plugin/plugin.json monitors/monitors.json; do
+            node -e "JSON.parse(require('fs').readFileSync('$f','utf8'))" && echo "OK: $f" || exit 1
+          done
+
+      - name: Validate MCP server syntax
+        run: node -c servers/cwp-mcp-server.js
+
+      - name: Install MCP dependencies
+        run: cd servers && npm ci
+
+      - name: Validate bash scripts
+        run: |
+          for f in hooks/scripts/*.sh scripts/*.sh cli/cwp; do
+            bash -n "$f" && echo "OK: $f" || exit 1
+          done
+
+      - name: Check for security patterns
+        run: |
+          grep -q "validate_db_name" cli/cwp || (echo "Missing SQL validation" && exit 1)
+          grep -q "accept-new" cli/cwp || (echo "Missing SSH hardening" && exit 1)
+          grep -q "req.setTimeout" servers/cwp-mcp-server.js || (echo "Missing API timeout" && exit 1)
+          echo "Security checks passed"
+
+      - name: Verify dual-path patterns
+        run: |
+          grep -q "user_backup" skills/cwp-core/SKILL.md || (echo "Missing backup dual-path" && exit 1)
+          grep -q "generate_hostname_ssl" skills/cwp-security/SKILL.md || (echo "Missing SSL dual-path" && exit 1)
+          grep -q "php83-php-fpm" skills/cwp-php/SKILL.md || (echo "Missing PHP-FPM detection" && exit 1)
+          echo "Dual-path checks passed"
+
+      - name: Run CLI tests
+        run: bash tests/test-cli.sh
