@@ -216,7 +216,7 @@ check_mysql() {
     # Check slow queries
     local slow_queries
     slow_queries=$(remote_exec_sudo "mysql -e 'SHOW STATUS LIKE \"Slow_queries\";' 2>/dev/null | awk '/Slow_queries/{print \$2}'" || echo "0")
-    log_info "MySQL slow queries: $slow_queries"
+    log_ok "MySQL slow queries: $slow_queries"
 }
 
 # ---------------------------------------------------------------------------

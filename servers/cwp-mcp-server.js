@@ -64,7 +64,7 @@ function sanitizeInput(input) {
  */
 function sanitizeApiInput(input) {
   if (typeof input !== "string") return "";
-  return input.replace(/[^a-zA-Z0-9\-._@ ]/g, "");
+  return input.replace(/[^a-zA-Z0-9\-._@]/g, "");
 }
 
 /**

@@ -136,6 +136,17 @@ validate_username() {
     fi
 }
 
+# Validate file path - reject path traversal and shell metacharacters
+validate_file_path() {
+    local path="$1"
+    if [[ ! "$path" =~ ^[a-zA-Z0-9/_.-]+$ ]]; then
+        die "Invalid file path: '$path' (allowed: alphanumeric, slashes, dots, hyphens, underscores)"
+    fi
+    if [[ "$path" == *".."* ]]; then
+        die "Path traversal detected in: '$path'"
+    fi
+}
+
 # JSON output helper
 json_output() {
     local key="$1" value="$2"
@@ -468,7 +479,7 @@ cmd_email() {
             validate_email "$email"
             [[ -z "$password" ]] && { read -rsp "Password: " password; echo ""; }
             log_info "Creating email account: $email"
-            remote_exec_sudo "/scripts/create_mail_account '$email' '$password'"
+            printf '%s\n%s\n' "$email" "$password" | remote_exec_sudo "/scripts/create_mail_account"
             ;;
         delete)
             local email="${1:-}"
@@ -550,7 +561,7 @@ cmd_dns() {
                     ;;
                 *)
                     # For other types, allow alphanumeric, dots, spaces, and basic characters
-                    if [[ "$value" =~ [\;\&\|\`\$\(\)] ]]; then
+                    if [[ "$value" =~ [\'\;\&\|\`\$\(\)] ]]; then
                         die "Invalid record value: '$value' (contains unsafe characters)"
                     fi
                     ;;
@@ -558,7 +569,7 @@ cmd_dns() {
             local ttl=14400
             local entry="${name}    ${ttl}    IN    ${record_type}    ${value}"
             log_info "Adding DNS record: $entry"
-            remote_exec_sudo "echo '$entry' >> /var/named/${domain}.db"
+            printf '%s\n' "$entry" | remote_exec_sudo "cat >> /var/named/${domain}.db"
             remote_exec_sudo "systemctl reload named"
             log_info "Record added and named reloaded."
             ;;
@@ -757,15 +768,17 @@ cmd_backup() {
                 backupfile=$(remote_exec_sudo "ls -t /backup/${username}_*.tar.gz 2>/dev/null | head -1")
                 [[ -z "$backupfile" ]] && die "No backup found for $username"
             fi
+            validate_file_path "$backupfile"
             log_info "Restoring $username from $backupfile..."
-            remote_exec_sudo "/scripts/restore_user $username $backupfile"
+            remote_exec_sudo "/scripts/restore_user $(printf '%q' "$username") $(printf '%q' "$backupfile")"
             log_info "Restore complete."
             ;;
         verify)
             local backupfile="${1:-}"
             [[ -z "$backupfile" ]] && die "Usage: ${SCRIPT_NAME} backup verify <file>"
+            validate_file_path "$backupfile"
             log_info "Verifying backup: $backupfile"
-            remote_exec_sudo "tar -tzf $backupfile >/dev/null 2>&1" && \
+            remote_exec_sudo "tar -tzf $(printf '%q' "$backupfile") >/dev/null 2>&1" && \
                 log_info "Backup integrity OK." || \
                 log_error "Backup file is corrupt!"
             ;;
@@ -1173,15 +1186,15 @@ cmd_logs() {
             [[ -z "$pattern" ]] && die "Usage: ${SCRIPT_NAME} logs search <pattern> [log-name]"
             validate_log_name "$logname"
             # Validate pattern - reject dangerous shell characters
-            if [[ "$pattern" =~ [\;\&\|\`\$\(\)] ]]; then
+            if [[ "$pattern" =~ [\'\;\&\|\`\$\(\)] ]]; then
                 die "Invalid search pattern: '$pattern' (contains unsafe characters)"
             fi
             log_info "Searching for '$pattern' in $logname log..."
             case "$logname" in
-                error) remote_exec_sudo "grep -i '$pattern' /usr/local/apache/logs/error_log 2>/dev/null | tail -20" ;;
-                access) remote_exec_sudo "grep -i '$pattern' /usr/local/apache/domlogs/* 2>/dev/null | tail -20" ;;
-                mail) remote_exec_sudo "grep -i '$pattern' /var/log/maillog 2>/dev/null | tail -20" ;;
-                *) remote_exec_sudo "grep -i '$pattern' /var/log/$logname 2>/dev/null | tail -20" ;;
+                error) remote_exec_sudo "grep -i $(printf '%q' "$pattern") /usr/local/apache/logs/error_log 2>/dev/null | tail -20" ;;
+                access) remote_exec_sudo "grep -i $(printf '%q' "$pattern") /usr/local/apache/domlogs/* 2>/dev/null | tail -20" ;;
+                mail) remote_exec_sudo "grep -i $(printf '%q' "$pattern") /var/log/maillog 2>/dev/null | tail -20" ;;
+                *) remote_exec_sudo "grep -i $(printf '%q' "$pattern") /var/log/$logname 2>/dev/null | tail -20" ;;
             esac
             ;;
         errors)

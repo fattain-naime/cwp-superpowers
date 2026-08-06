@@ -8,6 +8,16 @@ SOURCE_IP="$1"
 SOURCE_USER="${2:-root}"
 SSH_KEY="$3"
 
+# Input validation
+if [[ -n "$SOURCE_IP" && ! "$SOURCE_IP" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+    echo "Invalid source IP: '$SOURCE_IP'"
+    exit 1
+fi
+if [[ -n "$SOURCE_USER" && ! "$SOURCE_USER" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+    echo "Invalid source user: '$SOURCE_USER'"
+    exit 1
+fi
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'

@@ -21,6 +21,7 @@ disallowedTools: ["Write", "Edit"]
 effort: high
 maxTurns: 30
 maxConcurrent: 3
+background: true
 skills: ["cwp-security", "cwp-core"]
 ---
 
