@@ -1,6 +1,6 @@
 # CWP AI Agent Plugin - Complete Architecture Design
 
-**Plugin Name:** `cwp-pro-centos`  
+**Plugin Name:** `cwp-superpowers`  
 **Version:** 1.0.0  
 **Purpose:** AI-powered God Mode plugin for CWP (Control Web Panel) management  
 **Platform:** Claude Code Plugin System  
